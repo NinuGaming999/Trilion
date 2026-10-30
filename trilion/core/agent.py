@@ -1,0 +1,276 @@
+"""The assistant loop: hear -> see -> think -> speak/act, streaming sentence by sentence."""
+import json
+import logging
+import queue
+import re
+import threading
+import time
+
+from . import screen
+from .tools import SCREEN_TOOLS, TOOL_DOCS, Tools
+
+log = logging.getLogger("trilion.agent")
+
+WAKE_RE = re.compile(r"\b(tri+l+[iy]?[oa]n|trillion|trillian|trilian|trylon)\b[,.!?]?", re.I)
+ACTION_RE = re.compile(r"<action>\s*(\{.*?\})\s*</action>", re.S)
+
+SYSTEM = f"""You are Trilion, a friendly voice assistant living on the user's Windows PC. \
+You can SEE their screen (a screenshot is attached to their messages) and CONTROL the PC with tools.
+
+Your replies are spoken aloud, so: 1-3 short sentences, plain words, no markdown, no lists, no emojis.
+
+To use tools, end your reply with one or more action tags, exactly like this:
+<action>{{"tool": "open_app", "args": {{"name": "notepad"}}}}</action>
+You will then receive the results and a fresh screenshot, and continue. When the task is finished, \
+reply normally with no action tag. Say briefly what you are about to do before acting.
+
+Rules:
+- Click coordinates are pixels in the screenshot image you were shown (its size is given).
+- Prefer open_app and keyboard shortcuts over clicking; they are more reliable.
+- Check the new screenshot before claiming something worked. If it did not, try another way or ask.
+- Never run destructive commands (deleting, formatting, killing system processes) unless clearly asked.
+- If the request is unclear, ask one short question.
+
+Tools:
+{TOOL_DOCS}
+"""
+
+
+def parse_actions(text):
+    out = []
+    for m in ACTION_RE.finditer(text):
+        try:
+            out.append(json.loads(m.group(1)))
+        except Exception:
+            out.append({"tool": "_bad", "args": {}, "raw": m.group(1)})
+    return out
+
+
+def strip_actions(text):
+    t = ACTION_RE.sub("", text)
+    t = re.sub(r"<action>.*", "", t, flags=re.S)
+    return t.strip()
+
+
+def clean_for_speech(s):
+    s = re.sub(r"[*_`#>]+", "", s)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
+class Streamer:
+    """Turns a token stream into whole sentences (ignoring <action> blocks)."""
+
+    def __init__(self, emit):
+        self.emit, self.text, self.spoken = emit, "", 0
+
+    def _visible(self, final):
+        i = self.text.find("<action>")
+        if i >= 0:
+            return self.text[:i]
+        if not final:
+            j = self.text.rfind("<")
+            if j >= 0 and "<action>".startswith(self.text[j:]):
+                return self.text[:j]
+        return self.text
+
+    def feed(self, delta):
+        self.text += delta
+        vis = self._visible(False)
+        seg = vis[self.spoken:]
+        end = 0
+        for m in re.finditer(r"[.!?]\s|\n", seg):
+            end = m.end()
+        if end:
+            self.emit(seg[:end])
+            self.spoken += end
+
+    def finish(self):
+        vis = self._visible(True)
+        rest = vis[self.spoken:]
+        if rest.strip():
+            self.emit(rest)
+        self.spoken = len(vis)
+
+
+class Speaker:
+    def __init__(self, tts, player, bridge):
+        self.tts, self.player, self.bridge = tts, player, bridge
+        self.q = queue.Queue()
+        self.pending = 0
+        self.lock = threading.Lock()
+        self.cancelled = False
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def say(self, text):
+        text = clean_for_speech(text)
+        if not text:
+            return
+        with self.lock:
+            self.pending += 1
+        self.q.put(text)
+
+    def _run(self):
+        while True:
+            text = self.q.get()
+            try:
+                if not self.cancelled:
+                    samples, sr = self.tts.synth(text)
+                    if not self.cancelled:
+                        self.bridge.caption.emit(text)
+                        self.player.play(samples, sr)
+            except Exception:
+                log.exception("tts failed")
+            finally:
+                with self.lock:
+                    self.pending -= 1
+
+    def wait_done(self, timeout=180):
+        end = time.time() + timeout
+        while (self.pending > 0 or self.player.busy()) and time.time() < end and not self.cancelled:
+            time.sleep(0.05)
+
+    def stop(self):
+        self.cancelled = True
+        while True:
+            try:
+                self.q.get_nowait()
+                with self.lock:
+                    self.pending -= 1
+            except queue.Empty:
+                break
+        self.player.stop()
+
+    def reset(self):
+        self.cancelled = False
+
+
+class Assistant:
+    def __init__(self, rt, bridge):
+        self.rt, self.cfg, self.bridge = rt, rt.cfg, bridge
+        self.speaker = Speaker(rt.tts, rt.player, bridge)
+        self.tools = Tools(self.cfg, bridge.ask)
+        self.q = queue.Queue()
+        self.cancel = threading.Event()
+        self.history = []
+        self.busy = False
+        self.mic_enabled = True
+        self.unmute_at = 0.0
+        self.last_active = 0.0
+        rt.listener.gate = self._ignore_audio
+        rt.listener.on_utterance = self.on_audio
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    # ---- inputs ----
+    def _ignore_audio(self):
+        return (not self.mic_enabled) or self.busy or self.rt.player.busy() or time.time() < self.unmute_at
+
+    def on_audio(self, audio):
+        self.busy = True
+        self.q.put(("audio", audio))
+
+    def submit_text(self, text):
+        self.busy = True
+        self.q.put(("text", text))
+
+    def stop(self):
+        self.cancel.set()
+        self.speaker.stop()
+
+    # ---- main loop ----
+    def _state(self, s):
+        self.bridge.state.emit(s)
+
+    def _loop(self):
+        while True:
+            kind, payload = self.q.get()
+            try:
+                self.cancel.clear()
+                self.speaker.reset()
+                text = payload
+                if kind == "audio":
+                    self._state("thinking")
+                    text = self.rt.stt.transcribe(payload)
+                    if not text:
+                        continue
+                    active = time.time() - self.last_active < 45
+                    if self.cfg.get("wake_word", True) and not active and not WAKE_RE.search(text):
+                        log.info("ignored (no wake word): %s", text)
+                        continue
+                    stripped = WAKE_RE.sub("", text, count=1).strip(" ,.!?")
+                    text = stripped or "(The user just said your name. Greet them briefly.)"
+                self.last_active = time.time()
+                self._turn(text, show_user=kind == "audio" or True)
+            except Exception as e:
+                log.exception("turn failed")
+                self.bridge.message.emit("error", str(e))
+                self.speaker.say("Sorry, something went wrong.")
+            finally:
+                self.speaker.wait_done()
+                self.last_active = time.time()
+                self.unmute_at = time.time() + 0.6
+                self.busy = not self.q.empty()
+                self.bridge.caption.emit("")
+                self._state("idle")
+
+    def _user_msg(self, text, shot=True):
+        if not shot:
+            return {"role": "user", "content": text}
+        b64, (w, h) = screen.grab(self.cfg.get("screen_max_width", 1280))
+        return {"role": "user", "content": [
+            {"type": "text", "text": f"{text}\n[Screenshot attached, {w}x{h} px]"},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+        ]}
+
+    def _messages(self):
+        last_img = max((i for i, m in enumerate(self.history) if isinstance(m["content"], list)), default=-1)
+        out = [{"role": "system", "content": SYSTEM}]
+        for i, m in enumerate(self.history):
+            c = m["content"]
+            if isinstance(c, list) and i != last_img:
+                c = " ".join(p["text"] for p in c if p["type"] == "text") + " [older screenshot omitted]"
+            out.append({"role": m["role"], "content": c})
+        return out
+
+    def _trim(self):
+        self.history = self.history[-14:]
+        while self.history and self.history[0]["role"] != "user":
+            self.history.pop(0)
+
+    def _speak(self, sentence):
+        self._state("speaking")
+        self.speaker.say(sentence)
+
+    def _turn(self, text, show_user=True):
+        self.bridge.message.emit("user", text)
+        self._state("thinking")
+        self.history.append(self._user_msg(text, self.cfg.get("watch_screen", True)))
+        for _ in range(int(self.cfg.get("max_steps", 8))):
+            if self.cancel.is_set():
+                break
+            streamer, full = Streamer(self._speak), ""
+            for delta in self.rt.llm.chat_stream(self._messages(), cancel=self.cancel):
+                full += delta
+                streamer.feed(delta)
+            streamer.finish()
+            self.history.append({"role": "assistant", "content": full})
+            said = strip_actions(full)
+            if said:
+                self.bridge.message.emit("assistant", said)
+            actions = parse_actions(full)
+            if not actions or self.cancel.is_set():
+                break
+            self.speaker.wait_done()
+            self._state("acting")
+            results, need_shot = [], False
+            for a in actions[:4]:
+                if a.get("tool") == "_bad":
+                    results.append("Could not parse your action JSON; use valid JSON.")
+                    continue
+                self.bridge.message.emit("action", f"{a.get('tool')} {json.dumps(a.get('args', {}), ensure_ascii=False)[:90]}")
+                results.append(f"{a.get('tool')}: {self.tools.run(a)}")
+                need_shot |= a.get("tool") in SCREEN_TOOLS
+            msg = "Tool results:\n" + "\n".join(results)
+            self.history.append(self._user_msg(msg, need_shot or self.cfg.get("watch_screen", True)))
+            self._state("thinking")
+        self._trim()

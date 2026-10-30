@@ -1,0 +1,10 @@
+PySide6-Essentials>=6.6
+numpy
+requests
+sounddevice
+mss
+Pillow
+pyautogui
+pyperclip
+faster-whisper
+kokoro-onnx
