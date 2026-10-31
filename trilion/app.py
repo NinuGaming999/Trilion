@@ -4,6 +4,7 @@ import sys
 
 
 def main():
+    minimized = "--minimized" in sys.argv
     if os.name == "nt":
         try:  # real pixel coordinates for screen reading / clicking
             ctypes.windll.shcore.SetProcessDpiAwareness(2)
@@ -19,6 +20,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("Trilion")
+    app.setQuitOnLastWindowClosed(False)  # the tray keeps Trilion alive; windows quit explicitly
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     icon = os.path.join(base, "assets", "trilion.ico")
     if os.path.exists(icon):
@@ -33,12 +35,17 @@ def main():
         b = Boot(bridge)
         state["boot"] = b
         b.progress.connect(loading.set_progress)
-        b.failed.connect(loading.set_error)
+        b.failed.connect(on_failed)
         b.ready.connect(on_ready)
         b.start()
 
+    def on_failed(msg):
+        loading.set_error(msg)
+        loading.show()  # also when started hidden at login
+
     loading = LoadingWindow(on_retry=start_boot)
-    loading.show()
+    if not minimized:
+        loading.show()
     app.processEvents()
 
     from .core.bridge import Bridge
@@ -52,8 +59,12 @@ def main():
         assistant = Assistant(rt, bridge)
         win = MainWindow(rt, assistant, bridge)
         state["win"] = win
-        win.show()
-        loading.close()
+        loading.finishing = True
+        if minimized and win.tray_ok:
+            loading.close()
+        else:
+            win.show()
+            loading.close()
 
     # 2) Heavy work happens off the UI thread.
     start_boot()

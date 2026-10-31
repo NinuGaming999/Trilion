@@ -1,34 +1,35 @@
 # Trilion
 
-A local, voice-driven AI assistant for Windows that can **see your screen**, **talk to you**, and **control your PC**.
+A local, voice-driven AI assistant for Windows that **sees your screen**, **talks to you**, and **controls your PC**.
 Everything runs on your own machine (tuned for an RTX 3060 12 GB). No cloud, no API keys.
 
-- **Brain + vision:** Qwen2.5-VL 7B (Q4) through a bundled `llama.cpp` server, on the GPU (~6.5 GB VRAM)
-- **Ears:** faster-whisper (CPU, int8) - **Voice:** Kokoro TTS (CPU)
-- **Hands:** open apps/URLs, keyboard, mouse, files, shell (risky actions ask first)
-- **UI:** instant loading screen with progress bar, then a triangular wave that reacts to your voice and Trilion's voice
-
-## Get the .exe
-Open the **Actions** tab -> latest *Build Trilion for Windows* run -> download `Trilion-Windows`:
-- `Trilion-Setup.exe` - one-file installer (recommended; the installed app starts fastest)
-- `Trilion-portable.zip` - unzip and run `Trilion.exe`
+## Download (fast)
+Go to the **[Releases](../../releases/latest)** page and download **`Trilion-Setup.exe`**. Run it, then start Trilion from the desktop shortcut.
+(`Trilion-portable.zip` is the same app without an installer.)
 
 On the **first launch** Trilion downloads the engine and models (~6 GB) once into `%LOCALAPPDATA%\Trilion`
-with a progress bar. Every launch after that only loads the models into memory.
+with a progress bar. Later launches only load the models into memory.
 
-## Use it
-Just speak (watch the MIC meter), or click **Talk**, speak, click again to send - that always works. Optional "Wake word" mode needs you to say "Trilion" first.
-Examples: "Trilion, open Notepad and write a shopping list", "what's on my screen?", "open YouTube".
-Toggles: Mic, Watch screen, Wake word, Confirm risky. **Stop** interrupts. Slam the mouse into a screen corner to abort mouse control.
+## What it can do
+- **See:** screenshots of your screen (its own window is hidden from them) plus a `zoom` tool for small text.
+- **Hear / speak:** local Whisper + Kokoro. Just talk, or click **Talk** (click, speak, click again).
+- **Operate apps by name:** Windows UI Automation lets it click buttons and type into fields by their names, with screenshot clicking as the fallback.
+- **Web:** search and read pages; it never guesses links, only opens ones it found.
+- **Files and system:** files, PowerShell/cmd, Python (risky actions ask first).
+- **Skills:** folders with a `SKILL.md` in `%LOCALAPPDATA%\Trilion\skills\`. Trilion loads one when your request matches it. Built in: play-media, research-topic, organize-folder, system-check, take-notes, daily-briefing, operate-app, learn-skill. Say *"Trilion, learn how to do this"* to have it write a new skill, or add your own folder (optionally with `.ps1` / `.py` scripts it can run).
+- **Memory:** tell it "remember that ..." and it keeps facts between sessions (`memory.json`); say "forget ..." to remove them.
+
+## Keys and tray
+`Ctrl+Alt+T` talk on/off from anywhere - `Ctrl+Alt+S` stop everything. The tray icon menu has Show, Talk, Stop, *Start with Windows* and *Close button hides to tray*.
+Slam the mouse into a screen corner to abort mouse control.
 
 ## Run from source
 ```
 pip install -r requirements.txt
 python run_trilion.py
 ```
-Settings live in `%LOCALAPPDATA%\Trilion\config.json` (model repo, quant, voice, Whisper size, context, ...).
-Logs: `%LOCALAPPDATA%\Trilion\logs`.
+Settings: `%LOCALAPPDATA%\Trilion\config.json`. Logs: `%LOCALAPPDATA%\Trilion\logs` (or the **Copy log** button).
 
 ## Notes
-- Clicking by coordinates is the weakest part of a 7B model; keyboard/`open_app` are preferred. A GUI-specialist model (UI-TARS) is the upgrade path.
-- Built on: llama.cpp, faster-whisper, kokoro-onnx, PySide6, PyAutoGUI, mss.
+- A 7B model is good, not perfect: it can still misread a screen or misclick. Ask it to double-check, and keep "Confirm risky" on.
+- Built on: llama.cpp, faster-whisper, kokoro-onnx, PySide6, PyAutoGUI, uiautomation, mss.

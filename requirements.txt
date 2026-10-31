@@ -8,3 +8,4 @@ pyautogui
 pyperclip
 faster-whisper
 kokoro-onnx
+uiautomation; sys_platform == "win32"

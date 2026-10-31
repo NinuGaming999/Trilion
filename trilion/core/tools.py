@@ -22,39 +22,69 @@ SEEING
 look {}                                   - fresh screenshot
 zoom {"x":100,"y":200,"w":400,"h":200}    - read small text: native-resolution close-up of a region (screenshot coords)
 list_windows {}                           - titles of open windows
+ui_list {"window":"Notepad"}              - list buttons/fields/menus BY NAME in a window (window optional = front window)
 APPS & WINDOWS
 open_app {"name":"notepad"}               - launch an app, file, folder or shortcut by name/path
-open_url {"url":"https://..."}            - open a link in the browser (ONLY links the user gave or that came from web_search/fetch_url; never invent one)
-play_youtube {"query":"lofi hip hop"}     - find a video on YouTube by search words and open it
-search_site {"query":"...","site":"google|youtube|maps|amazon|wikipedia"} - open a search page in the browser
+play_youtube {"query":"lofi hip hop"}     - find a YouTube video by search words and open the top result (then look to confirm it is right)
+open_search {"site":"youtube","query":"lofi music"} - open a site's search page (youtube, google, maps, spotify, wikipedia, github, amazon, images)
+open_url {"url":"https://..."}            - open a link (only links you found with web_search/open_search/fetch_url, or the user gave you)
 focus_window {"title":"Chrome"}           - bring a window to the front (title substring)
 MOUSE & KEYBOARD
-click {"x":100,"y":200,"button":"left","double":false} - click at screenshot pixel coords
+ui_click {"name":"Save","window":"Notepad","double":false} - click a control BY NAME (best choice; no pixel guessing)
+ui_type {"name":"Search","text":"hello","enter":true}      - click a text field by name and type
+click {"x":100,"y":200,"button":"left","double":false} - click at screenshot pixel coords (fallback)
 drag {"x1":10,"y1":10,"x2":300,"y2":200}  - drag with the mouse
 move {"x":100,"y":200}   scroll {"amount":-5} (negative = down)
 type_text {"text":"hello","enter":false}  - type at the cursor
-press_keys {"keys":"ctrl+s"}              - key or combo: enter, win, alt+tab, win+d, ctrl+shift+esc, volumeup, volumedown, volumemute, playpause, nexttrack, printscreen ...
+press_keys {"keys":"ctrl+s"}              - key or combo: enter, win, alt+tab, win+d, volumeup, volumedown, volumemute, playpause, nexttrack ...
 clipboard_get {}   clipboard_set {"text":"..."}
 wait {"seconds":2}
 INTERNET
-web_search {"query":"..."}                - search the web
+web_search {"query":"..."}                - search the web (returns real links)
 fetch_url {"url":"https://..."}           - read a web page as text
 FILES & SYSTEM
 list_dir {"path":"C:/Users"}   read_file {"path":"C:/a.txt"}
 write_file {"path":"C:/a.txt","content":"..."}   - asks the user
-run_shell {"command":"..."}               - cmd/PowerShell (e.g. powershell -c "..."); asks the user. Use it for anything with no button: installing, killing tasks, settings, system info.
-run_python {"code":"print(2+2)"}          - run Python for calculations or file/data work; asks the user"""
+run_shell {"command":"..."}               - cmd/PowerShell (e.g. powershell -c "..."); asks the user
+run_python {"code":"print(2+2)"}          - run Python for calculations or data work; asks the user
+SKILLS & MEMORY
+use_skill {"name":"play-media"}           - load a skill's step-by-step instructions
+list_skills {}                            - all skills
+create_skill {"name":"my-skill","description":"when to use it","instructions":"1. ... 2. ..."}
+run_skill_script {"skill":"my-skill","script":"do.ps1","args":""} - run a script stored in a skill; asks the user
+remember {"fact":"The user's city is Dhaka"}   forget {"fact":"city"}"""
 
-RISKY = {"run_shell", "write_file", "run_python"}
-SCREEN_TOOLS = {"open_app", "open_url", "look", "click", "move", "scroll", "type_text", "press_keys", "wait",
-                "drag", "focus_window", "play_youtube", "search_site"}
+RISKY = {"run_shell", "write_file", "run_python", "run_skill_script"}
+SCREEN_TOOLS = {"open_app", "open_url", "open_search", "look", "click", "move", "scroll", "type_text",
+                "press_keys", "wait", "drag", "focus_window", "ui_click", "ui_type", "play_youtube", "search_site"}
+
+SEARCH_SITES = {
+    "youtube": "https://www.youtube.com/results?search_query={q}",
+    "google": "https://www.google.com/search?q={q}",
+    "images": "https://www.google.com/search?tbm=isch&q={q}",
+    "maps": "https://www.google.com/maps/search/{q}",
+    "spotify": "https://open.spotify.com/search/{q}",
+    "wikipedia": "https://en.wikipedia.org/w/index.php?search={q}",
+    "github": "https://github.com/search?q={q}",
+    "amazon": "https://www.amazon.com/s?k={q}",
+}
+URL_RE = re.compile(r"https?://[^\s\"'<>)\]]+")
+INTERACTIVE = {"ButtonControl", "EditControl", "MenuItemControl", "ListItemControl", "TabItemControl",
+               "CheckBoxControl", "RadioButtonControl", "HyperlinkControl", "ComboBoxControl",
+               "TreeItemControl", "SplitButtonControl"}
 
 
 class Tools:
-    def __init__(self, cfg, confirm):
+    def __init__(self, cfg, confirm, skills=None, memory=None, cancelled=lambda: False):
         self.cfg = cfg
         self.confirm = confirm  # confirm(text) -> bool (blocking)
+        self.skills, self.memory, self.cancelled = skills, memory, cancelled
         self.extra_image = None  # (b64, (w,h)) a tool wants shown to the model
+        self.known_urls = set()  # links the model may open: user-given or found via search
+
+    def note_text(self, text):
+        for u in URL_RE.findall(text or ""):
+            self.known_urls.add(u.rstrip(".,;"))
 
     def run(self, action):
         name = action.get("tool", "")
@@ -121,9 +151,20 @@ class Tools:
             time.sleep(1.5)
             return f"Tried to open {name} via Start search."
 
+    def _url_ok(self, url):
+        u = urlparse(url)
+        if u.scheme not in ("http", "https") or not u.netloc:
+            return False
+        if u.path in ("", "/") and not u.query:
+            return True  # a site's front page is safe
+        return any(url == k or url.startswith(k) for k in self.known_urls)
+
     def t_open_url(self, url, _user_text=""):
-        if "dQw4w9WgXcQ" in url:  # the 7B brain loves this link; only allow it if the user asked
+        if "dQw4w9WgXcQ" in url:  # the 7B brain loves this link
             return "Blocked: that is the Rickroll video. Do not invent links; use play_youtube with search words instead."
+        if not self._url_ok(url):
+            return ("Blocked: you must not guess links. Use web_search (then open one of its result links), "
+                    "open_search, or play_youtube to find the right page.")
         webbrowser.open(url)
         time.sleep(1.5)
         return f"Opened {url}."
@@ -136,6 +177,7 @@ class Tools:
             html = requests.get(page, headers=dict(UA, **{"Accept-Language": "en"}), timeout=15).text
             ids = [i for i in re.findall(r'"videoId":"([\w-]{11})"', html) if i != "dQw4w9WgXcQ"]
             if ids:
+                self.known_urls.add(f"https://www.youtube.com/watch?v={ids[0]}")
                 webbrowser.open(f"https://www.youtube.com/watch?v={ids[0]}")
                 time.sleep(2)
                 return f"Opened the top YouTube result for '{query}'."
@@ -155,6 +197,17 @@ class Tools:
                 "wikipedia": f"https://en.wikipedia.org/w/index.php?search={q}"}
         webbrowser.open(urls.get(site.lower(), urls["google"]))
         time.sleep(2)
+        return f"Opened {site} search for '{query}'."
+
+    def t_open_search(self, site, query):
+        from urllib.parse import quote_plus
+        tpl = SEARCH_SITES.get(site.lower())
+        if not tpl:
+            return f"Unknown site '{site}'. Choose from: {', '.join(SEARCH_SITES)}."
+        url = tpl.format(q=quote_plus(query))
+        self.known_urls.add(url)
+        webbrowser.open(url)
+        time.sleep(2.0)
         return f"Opened {site} search for '{query}'."
 
     def t_focus_window(self, title):
@@ -254,6 +307,7 @@ class Tools:
             href, title, rest = m.groups()
             q = parse_qs(urlparse(href).query).get("uddg")
             url = unquote(q[0]) if q else href
+            self.known_urls.add(url)
             sn = re.search(r'class="result__snippet"[^>]*>(.*?)</a>', rest, re.S)
             out.append(f"{self._strip(title)} - {url}\n  {self._strip(sn.group(1)) if sn else ''}")
             if len(out) >= 5:
@@ -263,6 +317,9 @@ class Tools:
     def t_fetch_url(self, url):
         import requests
         r = requests.get(url, headers=UA, timeout=20)
+        for h in re.findall(r'href="(https?://[^"]+)"', r.text)[:80]:
+            self.known_urls.add(h.replace("&amp;", "&"))
+        self.known_urls.add(url)
         return self._strip(r.text)[:2800]
 
     # ---- files / shell / python ----
@@ -286,3 +343,126 @@ class Tools:
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
             exec(compile(code, "<trilion>", "exec"), {"__name__": "__trilion__"})
         return buf.getvalue()[-2200:] or "(no output)"
+
+    # ---- UI Automation: click controls by name ----
+    def _uia_root(self, window=None):
+        import uiautomation as auto
+        if window:
+            w = auto.WindowControl(searchDepth=1, SubName=window)
+            if not w.Exists(2, 0.3):
+                raise RuntimeError(f"No window matching '{window}'. Use list_windows or focus_window.")
+            return auto, w
+        w = auto.GetForegroundControl()
+        w = w.GetTopLevelControl() or w
+        if (w.Name or "").startswith("Trilion"):
+            raise RuntimeError("Trilion's own window is in front. Use focus_window on the target app first, "
+                               "or pass the window name.")
+        return auto, w
+
+    def _uia_walk(self, auto, root, limit=1500, seconds=4.0):
+        t0, n = time.time(), 0
+        for c, _depth in auto.WalkControl(root, includeTop=False, maxDepth=14):
+            n += 1
+            if n > limit or time.time() - t0 > seconds:
+                return
+            try:
+                name = (c.Name or "").strip()
+                if not name or c.IsOffscreen:
+                    continue
+                r = c.BoundingRectangle
+                if r.width() < 2 or r.height() < 2:
+                    continue
+                yield c, name, c.ControlTypeName, (r.xcenter(), r.ycenter())
+            except Exception:
+                continue
+
+    def t_ui_list(self, window=None):
+        try:
+            auto, root = self._uia_root(window)
+        except ImportError:
+            return "UI Automation is not available; use the screenshot instead."
+        out, seen = [], set()
+        for _c, name, typ, _pos in self._uia_walk(auto, root):
+            if typ in INTERACTIVE and (typ, name) not in seen:
+                seen.add((typ, name))
+                out.append(f"{typ.replace('Control', '')}: {name[:60]}")
+            if len(out) >= 70:
+                break
+        return f"Window '{root.Name}':\n" + ("\n".join(out) or "(no named controls; use the screenshot)")
+
+    def _uia_find(self, name, window=None):
+        auto, root = self._uia_root(window)
+        key, best = name.lower().strip(), None
+        for c, nm, typ, pos in self._uia_walk(auto, root):
+            low = nm.lower()
+            if key not in low:
+                continue
+            score = (low == key) * 4 + (typ in INTERACTIVE) * 2 + (low.startswith(key)) * 1
+            if best is None or score > best[0]:
+                best = (score, nm, typ, pos)
+                if score >= 6:
+                    break
+        if not best:
+            raise RuntimeError(f"No control named '{name}'. Try ui_list or use the screenshot.")
+        return best
+
+    def t_ui_click(self, name, window=None, double=False):
+        try:
+            _s, nm, typ, (x, y) = self._uia_find(name, window)
+        except ImportError:
+            return "UI Automation is not available; use click with screenshot coordinates."
+        self._gui().click(x, y, clicks=2 if double else 1)
+        time.sleep(0.5)
+        return f"Clicked {typ.replace('Control', '')} '{nm[:50]}'."
+
+    def t_ui_type(self, name, text, window=None, enter=False):
+        try:
+            _s, nm, typ, (x, y) = self._uia_find(name, window)
+        except ImportError:
+            return "UI Automation is not available; click the field, then use type_text."
+        self._gui().click(x, y)
+        time.sleep(0.3)
+        self.t_type_text(text, enter=enter)
+        return f"Typed into '{nm[:50]}'."
+
+    # ---- skills & memory ----
+    def t_list_skills(self):
+        return "\n".join(f"{s['name']}: {s['description']}" for s in self.skills.all()) or "(no skills)"
+
+    def t_use_skill(self, name):
+        got = self.skills.get(name)
+        if not got:
+            return f"No skill named '{name}'. Available:\n" + self.t_list_skills()
+        body, scripts = got
+        extra = f"\n[Scripts you can run with run_skill_script: {', '.join(scripts)}]" if scripts else ""
+        return body[:3500] + extra
+
+    def t_create_skill(self, name, description, instructions):
+        d = self.skills.create(name, description, instructions)
+        return f"Saved skill '{d.name}'. Folder: {d}"
+
+    def t_run_skill_script(self, skill, script, args=""):
+        import shlex
+        p = self.skills.script_path(skill, script)
+        argv = shlex.split(args, posix=False) if args else []
+        suffix = p.suffix.lower()
+        if suffix == ".ps1":
+            r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(p), *argv],
+                               capture_output=True, text=True, timeout=120, creationflags=NO_WINDOW)
+        elif suffix in (".bat", ".cmd"):
+            r = subprocess.run(["cmd", "/c", str(p), *argv], capture_output=True, text=True, timeout=120,
+                               creationflags=NO_WINDOW)
+        elif suffix == ".py":
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                exec(compile(p.read_text(encoding="utf-8"), str(p), "exec"), {"__name__": "__main__", "ARGS": argv})
+            return buf.getvalue()[-2200:] or "(no output)"
+        else:
+            return "Unsupported script type."
+        return f"exit {r.returncode}\n{(r.stdout + r.stderr).strip()[-2200:]}"
+
+    def t_remember(self, fact):
+        return self.memory.add(fact)
+
+    def t_forget(self, fact):
+        return self.memory.forget(fact)

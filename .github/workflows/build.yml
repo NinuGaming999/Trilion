@@ -5,11 +5,24 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pytest requests numpy
+      - run: python -m pytest -q tests
+
   build:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -19,9 +32,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install -U pip
-          pip install -r requirements.txt pyinstaller pytest
-      - name: Tests
-        run: python -m pytest -q tests
+          pip install -r requirements.txt pyinstaller
       - name: Build app
         run: pyinstaller trilion.spec --noconfirm
       - name: Build installer (single Setup .exe)
@@ -29,17 +40,28 @@ jobs:
           choco install innosetup -y --no-progress
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\trilion.iss
       - name: Portable zip
-        run: Compress-Archive -Path dist\Trilion -DestinationPath dist\Trilion-portable.zip
-      - uses: actions/upload-artifact@v4
+        run: Compress-Archive -Path dist\Trilion -DestinationPath dist\Trilion-portable.zip -CompressionLevel Optimal
+      - name: Show sizes
+        run: Get-ChildItem dist\*.exe, dist\*.zip | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}
+      - name: Publish GitHub Release (fast CDN download)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Trilion ${{ github.ref_name }}
+          generate_release_notes: true
+          body: |
+            **Download `Trilion-Setup.exe`**, run it, then launch Trilion from the desktop shortcut.
+            The first launch downloads the AI models once (about 6 GB) with a progress bar.
+            `Trilion-portable.zip` is the same app without an installer.
+          files: |
+            dist/Trilion-Setup.exe
+            dist/Trilion-portable.zip
+      - name: Keep a copy as an Actions artifact (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
         with:
           name: Trilion-Windows
           path: |
             dist/Trilion-Setup.exe
             dist/Trilion-portable.zip
-      - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/Trilion-Setup.exe
-            dist/Trilion-portable.zip
+          compression-level: 0

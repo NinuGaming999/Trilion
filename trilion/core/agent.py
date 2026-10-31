@@ -7,6 +7,8 @@ import threading
 import time
 
 from . import screen
+from .memory import Memory
+from .skills import Skills
 from .tools import SCREEN_TOOLS, TOOL_DOCS, Tools
 
 log = logging.getLogger("trilion.agent")
@@ -35,6 +37,11 @@ Rules:
 - Click coordinates are pixels in the screenshot image you were shown (its size is given).
 - Prefer open_app and keyboard shortcuts over clicking; they are more reliable.
 - Check the new screenshot before claiming something worked. If it did not, try another way or ask.
+- NEVER invent or guess a link or a video. To find something, use open_search or web_search and open only what you actually found, then look at the screen to confirm it is the right thing.
+- When a request matches a skill in your skills list, call use_skill FIRST and follow its steps.
+- Prefer ui_list / ui_click / ui_type (controls by name) over pixel clicks. Fall back to the screenshot if they fail.
+- When the user tells you a lasting fact or preference ("remember...", their name, city, habits), call remember.
+- After you work out a useful multi-step procedure, offer to save it with create_skill.
 - Never run destructive commands (deleting, formatting, killing system processes) unless clearly asked.
 - If the request is unclear, ask one short question.
 
@@ -156,7 +163,8 @@ class Assistant:
     def __init__(self, rt, bridge):
         self.rt, self.cfg, self.bridge = rt, rt.cfg, bridge
         self.speaker = Speaker(rt.tts, rt.player, bridge)
-        self.tools = Tools(self.cfg, bridge.ask)
+        self.skills, self.memory = Skills(), Memory()
+        self.tools = Tools(self.cfg, bridge.ask, self.skills, self.memory, lambda: self.cancel.is_set())
         self.q = queue.Queue()
         self.cancel = threading.Event()
         self.history = []
@@ -233,7 +241,8 @@ class Assistant:
 
     def _messages(self):
         last_img = max((i for i, m in enumerate(self.history) if isinstance(m["content"], list)), default=-1)
-        out = [{"role": "system", "content": SYSTEM}]
+        extra = "\n\n".join(b for b in (self.skills.prompt_block(), self.memory.prompt_block()) if b)
+        out = [{"role": "system", "content": SYSTEM + ("\n" + extra if extra else "")}]
         for i, m in enumerate(self.history):
             c = m["content"]
             if isinstance(c, list) and i != last_img:
@@ -252,6 +261,7 @@ class Assistant:
 
     def _turn(self, text, show_user=True):
         self.bridge.message.emit("user", text)
+        self.tools.note_text(text)
         self._state("thinking")
         self.history.append(self._user_msg(text, self.cfg.get("watch_screen", True)))
         for _ in range(int(self.cfg.get("max_steps", 8))):
@@ -273,6 +283,9 @@ class Assistant:
             self._state("acting")
             results, need_shot = [], False
             for a in actions[:4]:
+                if self.cancel.is_set():
+                    results.append("Stopped by the user.")
+                    break
                 if a.get("tool") == "_bad":
                     results.append("Could not parse your action JSON; use valid JSON.")
                     continue

@@ -28,6 +28,7 @@ class LoadingWindow(QWidget):
         self.last = time.monotonic()
         self._drag = None
         self.on_retry = on_retry
+        self.finishing = False
         scr = QApplication.primaryScreen().availableGeometry()
         self.move(scr.center().x() - 340, scr.center().y() - 200)
 
@@ -127,6 +128,11 @@ class LoadingWindow(QWidget):
         p.setPen(QPen(QColor(255, 255, 255, 35), 1))
         p.setBrush(Qt.NoBrush)
         p.drawRect(0, 0, w - 1, h - 1)
+
+    def closeEvent(self, e):
+        if not self.finishing:
+            QApplication.quit()
+        e.accept()
 
     def mousePressEvent(self, e):
         self._drag = e.globalPosition().toPoint() - self.frameGeometry().topLeft()

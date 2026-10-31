@@ -100,3 +100,34 @@ def open_logs_folder():
         os.startfile(str(sub("logs")))
     except Exception:
         pass
+
+
+_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+
+def autostart_enabled():
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY) as k:
+            winreg.QueryValueEx(k, APP_NAME)
+            return True
+    except Exception:
+        return False
+
+
+def set_autostart(on):
+    """Start Trilion (hidden in the tray) when you sign in to Windows."""
+    import sys
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
+            if on:
+                winreg.SetValueEx(k, APP_NAME, 0, winreg.REG_SZ, f'"{sys.executable}" --minimized')
+            else:
+                try:
+                    winreg.DeleteValue(k, APP_NAME)
+                except FileNotFoundError:
+                    pass
+        return True
+    except Exception:
+        return False

@@ -3,9 +3,9 @@ import html
 import time
 
 from PySide6.QtCore import QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QPainter
+from PySide6.QtGui import QAction, QColor, QFont, QPainter
 from PySide6.QtWidgets import (QApplication, QComboBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-                               QPushButton, QTextBrowser, QVBoxLayout, QWidget)
+                               QPushButton, QSystemTrayIcon, QMenu, QTextBrowser, QVBoxLayout, QWidget)
 
 from .wave import TriWave, draw_logo
 
@@ -109,9 +109,82 @@ class MainWindow(QWidget):
 
         for m in getattr(rt, "warnings", []):
             self._add("error", m)
+        self._quitting = False
+        self._ht = self._hs = False
+        self._init_tray()
+        self._apply_affinity()
+        self.hotkey_timer = QTimer(self)
+        self.hotkey_timer.timeout.connect(self._poll_hotkeys)
+        self.hotkey_timer.start(50)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.timer.start(16)
+
+    # ---- tray ----
+    def _init_tray(self):
+        self.tray_ok = QSystemTrayIcon.isSystemTrayAvailable()
+        self.tray = QSystemTrayIcon(QApplication.windowIcon(), self)
+        self.tray.setToolTip("Trilion - Ctrl+Alt+T talk, Ctrl+Alt+S stop")
+        menu = QMenu()
+        act_show = QAction("Show Trilion", menu)
+        act_show.triggered.connect(self._show_front)
+        act_talk = QAction("Talk (Ctrl+Alt+T)", menu)
+        act_talk.triggered.connect(lambda: self.b_talk.toggle())
+        act_stop = QAction("Stop everything (Ctrl+Alt+S)", menu)
+        act_stop.triggered.connect(self._stop)
+        from ..paths import autostart_enabled, set_autostart
+        act_auto = QAction("Start with Windows (hidden in tray)", menu, checkable=True)
+        act_auto.setChecked(autostart_enabled())
+        act_auto.toggled.connect(lambda v: set_autostart(v))
+        act_tray = QAction("Close button hides to tray", menu, checkable=True)
+        act_tray.setChecked(bool(self.rt.cfg.get("close_to_tray", False)))
+        act_tray.toggled.connect(lambda v: self._cfg("close_to_tray", v))
+        act_quit = QAction("Quit Trilion", menu)
+        act_quit.triggered.connect(self._quit)
+        for a in (act_show, act_talk, act_stop):
+            menu.addAction(a)
+        menu.addSeparator()
+        for a in (act_auto, act_tray):
+            menu.addAction(a)
+        menu.addSeparator()
+        menu.addAction(act_quit)
+        self.tray.setContextMenu(menu)
+        self.tray._menu = menu  # keep alive
+        self.tray.activated.connect(lambda r: self._show_front() if r == QSystemTrayIcon.Trigger else None)
+        if self.tray_ok:
+            self.tray.show()
+
+    def _show_front(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _quit(self):
+        self._quitting = True
+        self.close()
+
+    # ---- global hotkeys (polled; no keyboard hooks, so no antivirus noise) ----
+    def _poll_hotkeys(self):
+        try:
+            import ctypes
+            down = lambda vk: bool(ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000)
+        except Exception:
+            self.hotkey_timer.stop()
+            return
+        combo = down(0x11) and down(0x12)
+        t, st = combo and down(0x54), combo and down(0x53)   # Ctrl+Alt+T / Ctrl+Alt+S
+        if t and not self._ht:
+            self.b_talk.toggle()
+        if st and not self._hs:
+            self._stop()
+        self._ht, self._hs = t, st
+
+    def _apply_affinity(self):
+        try:  # keep Trilion's own window out of the screenshots it takes
+            import ctypes
+            ctypes.windll.user32.SetWindowDisplayAffinity(int(self.winId()), 0x11)
+        except Exception:
+            pass
 
     def _btn(self, text, on, tip):
         b = QPushButton(text)
@@ -229,11 +302,7 @@ class MainWindow(QWidget):
 
     def showEvent(self, e):
         super().showEvent(e)
-        try:  # keep Trilion's own window out of the screenshots it takes
-            import ctypes
-            ctypes.windll.user32.SetWindowDisplayAffinity(int(self.winId()), 0x11)
-        except Exception:
-            pass
+        self._apply_affinity()
 
     def paintEvent(self, e):
         p = QPainter(self)
@@ -249,11 +318,16 @@ class MainWindow(QWidget):
         p.drawText(QRectF(80, 24, 200, 32), Qt.AlignLeft | Qt.AlignVCenter, "TRILION")
 
     def closeEvent(self, e):
+        if self.rt.cfg.get("close_to_tray", False) and self.tray_ok and not self._quitting:
+            self.hide()
+            e.ignore()
+            return
         try:
             self.assistant.stop()
             self.rt.listener.stop()
             self.rt.player.close()
             self.rt.llm.stop()
+            self.tray.hide()
         finally:
             QApplication.quit()
             e.accept()
