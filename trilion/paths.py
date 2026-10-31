@@ -11,15 +11,17 @@ DEFAULTS = {
     # Brain: any vision-capable GGUF repo on Hugging Face that llama.cpp supports.
     "llm_repo": "ggml-org/Qwen2.5-VL-7B-Instruct-GGUF",
     "llm_quant": "Q4_K_M",
-    "context": 8192,
+    "context": 12288,
     "gpu_layers": 99,
     # Ears (runs on CPU so the GPU stays free for the brain)
     "whisper_repo": "Systran/faster-whisper-small",
-    "whisper_language": None,  # None = auto-detect
+    "whisper_language": "en",  # None = auto-detect (less reliable on short phrases)
     # Voice
     "voice": "af_heart",
     # Behaviour
-    "wake_word": True,        # say "Trilion ..." (stays awake 45 s after each reply)
+    "wake_word": False,       # if on: say "Trilion ..." (stays awake 45 s after each reply)
+    "mic_device": None,       # input device name; None = Windows default
+    "config_version": 2,
     "watch_screen": True,     # attach a fresh screenshot to every request
     "confirm_risky": True,    # ask before shell commands / writing files
     "max_steps": 8,
@@ -46,7 +48,12 @@ class Config(dict):
         self.path = app_dir() / "config.json"
         if self.path.exists():
             try:
-                self.update(json.loads(self.path.read_text(encoding="utf-8")))
+                saved = json.loads(self.path.read_text(encoding="utf-8"))
+                self.update(saved)
+                if saved.get("config_version", 1) < 2:  # v0.1 defaults were too strict
+                    self.update(wake_word=False, whisper_language="en", context=12288,
+                                screen_max_width=1280, config_version=2)
+                    self.save()
             except Exception:
                 pass
         else:

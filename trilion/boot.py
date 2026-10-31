@@ -66,7 +66,9 @@ class Boot(QThread):
             rt.tts = TTS(voice_dir, cfg)
             e(0.9, "Opening audio devices…")
             rt.player = Player(self.bridge.out_level.emit)
-            rt.listener = Listener(self.bridge.mic_level.emit)
+            rt.listener = Listener(self.bridge.mic_level.emit,
+                                   lambda m: self.bridge.message.emit("error", m))
+            rt.listener.device = cfg.get("mic_device")
             e(1, "Senses online")
             rt.llm.wait_ready(self._cb("wait"))
             rt.listener.start()

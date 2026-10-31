@@ -17,7 +17,7 @@ On the **first launch** Trilion downloads the engine and models (~6 GB) once int
 with a progress bar. Every launch after that only loads the models into memory.
 
 ## Use it
-Say **"Trilion, ..."** (it stays awake 45 s after each reply) or type in the box.
+Just speak (watch the MIC meter), or click **Talk**, speak, click again to send - that always works. Optional "Wake word" mode needs you to say "Trilion" first.
 Examples: "Trilion, open Notepad and write a shopping list", "what's on my screen?", "open YouTube".
 Toggles: Mic, Watch screen, Wake word, Confirm risky. **Stop** interrupts. Slam the mouse into a screen corner to abort mouse control.
 

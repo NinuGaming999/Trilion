@@ -4,7 +4,7 @@ import time
 
 from PySide6.QtCore import QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter
-from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+from PySide6.QtWidgets import (QApplication, QComboBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
                                QPushButton, QTextBrowser, QVBoxLayout, QWidget)
 
 from .wave import TriWave, draw_logo
@@ -20,6 +20,8 @@ QPushButton:hover{background:rgba(255,255,255,0.15)}
 QPushButton:checked{background:rgba(58,214,255,0.22);border:1px solid rgba(58,214,255,0.7);color:white}
 QLabel#caption{color:#ffffff;font-size:20px;font-weight:500}
 QLabel#state{color:#8fa0d0;font-size:12px;letter-spacing:3px}
+QComboBox{background:rgba(255,255,255,0.07);color:#d6def8;border:1px solid rgba(255,255,255,0.16);border-radius:8px;padding:5px 10px;font-size:12px}
+QComboBox QAbstractItemView{background:#10162e;color:#d6def8;selection-background-color:#2a3a7a}
 """
 STATE_TEXT = {"idle": "READY", "listening": "LISTENING", "thinking": "THINKING",
               "speaking": "SPEAKING", "acting": "WORKING ON IT"}
@@ -40,11 +42,12 @@ class MainWindow(QWidget):
         self.t0 = self.last
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(34, 22, 34, 185)
+        lay.setContentsMargins(34, 22, 34, 180)
         lay.setSpacing(10)
         top = QHBoxLayout()
         top.addSpacing(170)
         self.state_lbl = QLabel("READY", objectName="state")
+        self.state_lbl.setMinimumWidth(130)
         top.addWidget(self.state_lbl)
         top.addStretch()
         self.b_mic = self._btn("Mic", True, "Listen for your voice")
@@ -52,11 +55,25 @@ class MainWindow(QWidget):
         self.b_conf = self._btn("Confirm risky", rt.cfg["confirm_risky"], "Ask before shell commands / writing files")
         self.b_wake = self._btn("Wake word", rt.cfg["wake_word"], 'Only react after you say "Trilion"')
         self.b_mic.setChecked(True)
+        self.b_talk = self._btn("Talk", False, "Click, speak, click again to send (always works)")
         self.b_stop = QPushButton("Stop")
-        self.b_stop.clicked.connect(self.assistant.stop)
-        for b in (self.b_mic, self.b_watch, self.b_wake, self.b_conf, self.b_stop):
+        self.b_stop.clicked.connect(self._stop)
+        for b in (self.b_talk, self.b_mic, self.b_watch, self.b_wake, self.b_conf, self.b_stop):
             top.addWidget(b)
         lay.addLayout(top)
+        row0 = QHBoxLayout()
+        row0.addSpacing(170)
+        self.dev = QComboBox()
+        self.dev.setMinimumWidth(320)
+        self.dev.setToolTip("Microphone")
+        self._fill_devices()
+        self.dev.currentIndexChanged.connect(self._pick_dev)
+        row0.addWidget(self.dev)
+        self.meter = QLabel("", objectName="state")
+        self.meter.setMinimumWidth(190)
+        row0.addWidget(self.meter)
+        row0.addStretch()
+        lay.addLayout(row0)
 
         self.log = QTextBrowser()
         self.log.setOpenExternalLinks(False)
@@ -68,12 +85,13 @@ class MainWindow(QWidget):
         lay.addWidget(self.caption)
         row = QHBoxLayout()
         self.inp = QLineEdit()
-        self.inp.setPlaceholderText('Say "Trilion, …" or type here and press Enter')
+        self.inp.setPlaceholderText('Type here and press Enter, or just speak')
         self.inp.returnPressed.connect(self._send)
         row.addWidget(self.inp)
         lay.addLayout(row)
 
         self.b_mic.toggled.connect(lambda v: setattr(self.assistant, "mic_enabled", v))
+        self.b_talk.toggled.connect(self._talk)
         self.b_watch.toggled.connect(lambda v: self._cfg("watch_screen", v))
         self.b_conf.toggled.connect(lambda v: self._cfg("confirm_risky", v))
         self.b_wake.toggled.connect(lambda v: self._cfg("wake_word", v))
@@ -83,7 +101,7 @@ class MainWindow(QWidget):
         bridge.caption.connect(self.caption.setText)
         bridge.message.connect(self._on_message)
         bridge.confirm_req.connect(self._on_confirm)
-        self._add("assistant", 'Online. Say "Trilion" and ask me anything, or type below.')
+        self._add("assistant", "Online. Click Talk and speak, or just talk (watch the MIC meter), or type below.")
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
@@ -96,6 +114,44 @@ class MainWindow(QWidget):
         b.setToolTip(tip)
         b.setCursor(Qt.PointingHandCursor)
         return b
+
+    def _fill_devices(self):
+        import sounddevice as sd
+        self.dev.blockSignals(True)
+        self.dev.clear()
+        self.dev.addItem("Default microphone", None)
+        try:
+            api = sd.query_hostapis(sd.default.hostapi)
+            for i in api["devices"]:
+                d = sd.query_devices(i)
+                if d["max_input_channels"] > 0:
+                    self.dev.addItem(d["name"], d["name"])
+        except Exception:
+            pass
+        want = self.rt.cfg.get("mic_device")
+        i = self.dev.findData(want)
+        self.dev.setCurrentIndex(max(0, i))
+        self.dev.blockSignals(False)
+
+    def _pick_dev(self, _):
+        name = self.dev.currentData()
+        self._cfg("mic_device", name)
+        try:
+            self.rt.listener.set_device(name)
+        except Exception as e:
+            self._add("error", f"Could not open that microphone: {e}")
+
+    def _talk(self, on):
+        if on:
+            self.assistant.stop()
+            self.rt.listener.begin_manual()
+            self.state_lbl.setText("RECORDING")
+        else:
+            self.rt.listener.end_manual()
+
+    def _stop(self):
+        self.b_talk.setChecked(False)
+        self.assistant.stop()
 
     def _cfg(self, k, v):
         self.rt.cfg[k] = v
@@ -121,6 +177,8 @@ class MainWindow(QWidget):
             h = f'<p style="margin:8px 0"><span style="color:#7fe8ff">You</span>&nbsp; {t}</p>'
         elif role == "assistant":
             h = f'<p style="margin:8px 0"><span style="color:#ff7fb8">Trilion</span>&nbsp; {t}</p>'
+        elif role == "heard":
+            h = f'<p style="margin:2px 0;color:#9a8fc0"><i>{t}</i></p>'
         elif role == "action":
             h = f'<p style="margin:2px 0;color:#7c89b8">&#9656; {t}</p>'
         else:
@@ -149,8 +207,18 @@ class MainWindow(QWidget):
             if self.state == "idle" and self.wave.state == "listening":
                 self.wave.set_state("idle")
             self.wave.set_level(0.0)
+        bars = int(min(10, self.mic_lvl * 14))
+        self.meter.setText("MIC " + "|" * bars + "." * (10 - bars))
         self.wave.tick(dt)
         self.update()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        try:  # keep Trilion's own window out of the screenshots it takes
+            import ctypes
+            ctypes.windll.user32.SetWindowDisplayAffinity(int(self.winId()), 0x11)
+        except Exception:
+            pass
 
     def paintEvent(self, e):
         p = QPainter(self)

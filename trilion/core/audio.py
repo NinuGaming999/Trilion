@@ -12,13 +12,20 @@ SR_OUT = 24000
 
 
 class Listener:
-    def __init__(self, on_level):
+    def __init__(self, on_level, on_warn=None):
         self.on_level = on_level
-        self.on_utterance = None
-        self.gate = lambda: False  # returns True when audio should be ignored
+        self.on_warn = on_warn or (lambda m: None)
+        self.on_utterance = None          # on_utterance(audio, forced=False)
+        self.gate = lambda: False         # True -> ignore the mic right now
+        self.device = None
         self.stream = None
+        self.floor = 0.003
+        self.manual = False
+        self.manual_buf = []
+        self.peak_seen = 0.0
+        self.started = 0.0
+        self.warned = False
         self._reset()
-        self.floor = 0.005
 
     def _reset(self):
         self.pre = collections.deque(maxlen=10)
@@ -29,26 +36,62 @@ class Listener:
         self.t_start = 0.0
 
     def start(self):
-        self.stream = sd.InputStream(samplerate=SR_IN, channels=1, dtype="float32",
-                                     blocksize=512, callback=self._cb)
+        self.stop()
+        self.started = time.monotonic()
+        self.peak_seen = 0.0
+        self.warned = False
+        self.stream = sd.InputStream(samplerate=SR_IN, channels=1, dtype="float32", blocksize=512,
+                                     device=self.device, callback=self._cb)
         self.stream.start()
 
     def stop(self):
         if self.stream:
-            self.stream.stop()
-            self.stream.close()
+            try:
+                self.stream.stop()
+                self.stream.close()
+            except Exception:
+                pass
+            self.stream = None
+
+    def set_device(self, name):
+        self.device = name
+        self._reset()
+        self.start()
+
+    # ---- click-to-talk: records everything until end_manual() ----
+    def begin_manual(self):
+        self.manual_buf = []
+        self.manual = True
+
+    def end_manual(self):
+        self.manual = False
+        buf, self.manual_buf = self.manual_buf, []
+        if buf and self.on_utterance:
+            audio = np.concatenate(buf)
+            if len(audio) > SR_IN * 0.4:
+                self.on_utterance(audio, True)
 
     def _cb(self, indata, frames, t, status):
         x = indata[:, 0].copy()
         rms = float(np.sqrt(np.mean(x * x)))
+        now = time.monotonic()
+        self.peak_seen = max(self.peak_seen, rms)
+        if not self.warned and now - self.started > 5 and self.peak_seen == 0.0:
+            self.warned = True
+            self.on_warn("Trilion is getting pure silence from the microphone. In Windows: Settings > Privacy & "
+                         "security > Microphone > turn on 'Let desktop apps access your microphone', or pick "
+                         "another mic in the dropdown.")
+        if self.manual:
+            self.on_level(min(1.0, rms * 14))
+            self.manual_buf.append(x)
+            return
         if self.gate():
             if self.speaking or self.buf:
                 self._reset()
             self.on_level(0.0)
             return
         self.on_level(min(1.0, rms * 14))
-        thr = max(0.012, self.floor * 3.5)
-        now = time.monotonic()
+        thr = max(0.006, self.floor * 3.0)
         if not self.speaking:
             if rms < thr:
                 self.floor = 0.97 * self.floor + 0.03 * rms
@@ -67,7 +110,7 @@ class Listener:
                 dur = now - self.t_start
                 self._reset()
                 if dur > 0.5 and self.on_utterance:
-                    self.on_utterance(audio)
+                    self.on_utterance(audio, False)
 
 
 class Player:

@@ -11,7 +11,7 @@ from .tools import SCREEN_TOOLS, TOOL_DOCS, Tools
 
 log = logging.getLogger("trilion.agent")
 
-WAKE_RE = re.compile(r"\b(tri+l+[iy]?[oa]n|trillion|trillian|trilian|trylon)\b[,.!?]?", re.I)
+WAKE_RE = re.compile(r"\b(tri+l+[iy]?[oae]n|tri+l+ing|tri+\s?lion|try\s?lion|tri+\s?leon|trillion|trillian|trilian|trylon)\b[,.!?]?", re.I)
 ACTION_RE = re.compile(r"<action>\s*(\{.*?\})\s*</action>", re.S)
 
 SYSTEM = f"""You are Trilion, a friendly voice assistant living on the user's Windows PC. \
@@ -24,7 +24,12 @@ To use tools, end your reply with one or more action tags, exactly like this:
 You will then receive the results and a fresh screenshot, and continue. When the task is finished, \
 reply normally with no action tag. Say briefly what you are about to do before acting.
 
+You can do almost anything on this PC: open and operate apps, browse and search the web, manage files, \
+run PowerShell/cmd commands for system tasks, and write Python. Break big jobs into steps and keep going \
+until it is done; do not give up after one failed try.
+
 Rules:
+- The screenshot never shows your own window. If text is small or unclear, use zoom on that region before answering.
 - Click coordinates are pixels in the screenshot image you were shown (its size is given).
 - Prefer open_app and keyboard shortcuts over clicking; they are more reliable.
 - Check the new screenshot before claiming something worked. If it did not, try another way or ask.
@@ -165,13 +170,13 @@ class Assistant:
     def _ignore_audio(self):
         return (not self.mic_enabled) or self.busy or self.rt.player.busy() or time.time() < self.unmute_at
 
-    def on_audio(self, audio):
+    def on_audio(self, audio, forced=False):
         self.busy = True
-        self.q.put(("audio", audio))
+        self.q.put(("audio", audio, forced))
 
     def submit_text(self, text):
         self.busy = True
-        self.q.put(("text", text))
+        self.q.put(("text", text, True))
 
     def stop(self):
         self.cancel.set()
@@ -183,7 +188,7 @@ class Assistant:
 
     def _loop(self):
         while True:
-            kind, payload = self.q.get()
+            kind, payload, forced = self.q.get()
             try:
                 self.cancel.clear()
                 self.speaker.reset()
@@ -192,10 +197,12 @@ class Assistant:
                     self._state("thinking")
                     text = self.rt.stt.transcribe(payload)
                     if not text:
+                        self.bridge.message.emit("heard", "(could not make out any words)")
                         continue
                     active = time.time() - self.last_active < 45
-                    if self.cfg.get("wake_word", True) and not active and not WAKE_RE.search(text):
+                    if self.cfg.get("wake_word", False) and not forced and not active and not WAKE_RE.search(text):
                         log.info("ignored (no wake word): %s", text)
+                        self.bridge.message.emit("heard", f'Heard "{text}" - say "Trilion" first, or turn off Wake word.')
                         continue
                     stripped = WAKE_RE.sub("", text, count=1).strip(" ,.!?")
                     text = stripped or "(The user just said your name. Greet them briefly.)"
@@ -271,6 +278,14 @@ class Assistant:
                 results.append(f"{a.get('tool')}: {self.tools.run(a)}")
                 need_shot |= a.get("tool") in SCREEN_TOOLS
             msg = "Tool results:\n" + "\n".join(results)
-            self.history.append(self._user_msg(msg, need_shot or self.cfg.get("watch_screen", True)))
+            um = self._user_msg(msg, need_shot or self.cfg.get("watch_screen", True))
+            if self.tools.extra_image:
+                b64z, (zw, zh) = self.tools.extra_image
+                self.tools.extra_image = None
+                if isinstance(um["content"], str):
+                    um["content"] = [{"type": "text", "text": um["content"]}]
+                um["content"][0]["text"] += f"\n[Close-up image attached, {zw}x{zh}]"
+                um["content"].append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64z}"}})
+            self.history.append(um)
             self._state("thinking")
         self._trim()

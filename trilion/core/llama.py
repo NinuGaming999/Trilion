@@ -168,6 +168,7 @@ class LlamaServer:
                 raise RuntimeError("The AI engine stopped while loading.\n" + tail)
             try:
                 if requests.get(f"http://127.0.0.1:{self.port}/health", timeout=1).status_code == 200:
+                    self._check_vision()
                     prog(1, "Brain online")
                     return
             except requests.RequestException:
@@ -176,6 +177,16 @@ class LlamaServer:
             prog(min(0.95, el / 25), "Loading brain onto the GPU…")
             time.sleep(0.4)
         raise RuntimeError("Timed out waiting for the AI engine")
+
+    def _check_vision(self):
+        try:
+            props = requests.get(f"http://127.0.0.1:{self.port}/props", timeout=3).json()
+            mods = props.get("modalities")
+            if mods is not None and not mods.get("vision", False):
+                raise RuntimeError("The vision module did not load, so Trilion cannot see the screen. "
+                                   "Delete %LOCALAPPDATA%\\Trilion\\models\\llm and relaunch.")
+        except requests.RequestException:
+            pass
 
     def stop(self):
         if self.proc and self.proc.poll() is None:

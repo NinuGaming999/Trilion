@@ -31,9 +31,14 @@ class STT:
         self.model = WhisperModel(str(model_dir), device="cpu", compute_type="int8", cpu_threads=threads)
 
     def transcribe(self, audio):
+        import numpy as np
+        peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
+        if peak > 1e-4:  # quiet mics: bring speech up to a healthy level
+            audio = np.clip(audio * min(0.8 / peak, 30.0), -1, 1).astype(np.float32)
         segs, _ = self.model.transcribe(audio, language=self.cfg.get("whisper_language"), beam_size=1,
-                                        condition_on_previous_text=False, vad_filter=False)
-        text = " ".join(s.text.strip() for s in segs if s.no_speech_prob < 0.6).strip()
+                                        condition_on_previous_text=False, vad_filter=False,
+                                        initial_prompt="Trilion, open Notepad. Trilion, what is on my screen?")
+        text = " ".join(s.text.strip() for s in segs if s.no_speech_prob < 0.85).strip()
         if len(text) < 2 or text.lower().strip(" .!") in {"you", "thank you", "thanks for watching", "bye"}:
             return ""
         return text
