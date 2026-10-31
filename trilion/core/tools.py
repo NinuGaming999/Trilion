@@ -24,7 +24,9 @@ zoom {"x":100,"y":200,"w":400,"h":200}    - read small text: native-resolution c
 list_windows {}                           - titles of open windows
 APPS & WINDOWS
 open_app {"name":"notepad"}               - launch an app, file, folder or shortcut by name/path
-open_url {"url":"https://..."}            - open a link in the browser
+open_url {"url":"https://..."}            - open a link in the browser (ONLY links the user gave or that came from web_search/fetch_url; never invent one)
+play_youtube {"query":"lofi hip hop"}     - find a video on YouTube by search words and open it
+search_site {"query":"...","site":"google|youtube|maps|amazon|wikipedia"} - open a search page in the browser
 focus_window {"title":"Chrome"}           - bring a window to the front (title substring)
 MOUSE & KEYBOARD
 click {"x":100,"y":200,"button":"left","double":false} - click at screenshot pixel coords
@@ -45,7 +47,7 @@ run_python {"code":"print(2+2)"}          - run Python for calculations or file/
 
 RISKY = {"run_shell", "write_file", "run_python"}
 SCREEN_TOOLS = {"open_app", "open_url", "look", "click", "move", "scroll", "type_text", "press_keys", "wait",
-                "drag", "focus_window"}
+                "drag", "focus_window", "play_youtube", "search_site"}
 
 
 class Tools:
@@ -119,10 +121,41 @@ class Tools:
             time.sleep(1.5)
             return f"Tried to open {name} via Start search."
 
-    def t_open_url(self, url):
+    def t_open_url(self, url, _user_text=""):
+        if "dQw4w9WgXcQ" in url:  # the 7B brain loves this link; only allow it if the user asked
+            return "Blocked: that is the Rickroll video. Do not invent links; use play_youtube with search words instead."
         webbrowser.open(url)
         time.sleep(1.5)
         return f"Opened {url}."
+
+    def t_play_youtube(self, query):
+        import requests
+        from urllib.parse import quote_plus
+        page = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
+        try:
+            html = requests.get(page, headers=dict(UA, **{"Accept-Language": "en"}), timeout=15).text
+            ids = [i for i in re.findall(r'"videoId":"([\w-]{11})"', html) if i != "dQw4w9WgXcQ"]
+            if ids:
+                webbrowser.open(f"https://www.youtube.com/watch?v={ids[0]}")
+                time.sleep(2)
+                return f"Opened the top YouTube result for '{query}'."
+        except Exception:
+            pass
+        webbrowser.open(page)
+        time.sleep(2)
+        return f"Opened YouTube search results for '{query}'."
+
+    def t_search_site(self, query, site="google"):
+        from urllib.parse import quote_plus
+        q = quote_plus(query)
+        urls = {"google": f"https://www.google.com/search?q={q}",
+                "youtube": f"https://www.youtube.com/results?search_query={q}",
+                "maps": f"https://www.google.com/maps/search/{q}",
+                "amazon": f"https://www.amazon.com/s?k={q}",
+                "wikipedia": f"https://en.wikipedia.org/w/index.php?search={q}"}
+        webbrowser.open(urls.get(site.lower(), urls["google"]))
+        time.sleep(2)
+        return f"Opened {site} search for '{query}'."
 
     def t_focus_window(self, title):
         if os.name != "nt":
