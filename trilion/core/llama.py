@@ -28,25 +28,36 @@ def _free_port():
     return p
 
 
-def _cuda_ver(name):
-    m = re.search(r"cuda-(\d+)\.(\d+)", name)
-    return (int(m[1]), int(m[2])) if m else (0, 0)
+REL = "https://github.com/ggml-org/llama.cpp/releases"
 
 
-def pick_assets(assets):
-    zips = [a for a in assets if a["name"].endswith(".zip") and "win" in a["name"] and "x64" in a["name"]]
-    cuda = [a for a in zips if "cuda" in a["name"]]
-    cuda12 = [a for a in cuda if _cuda_ver(a["name"])[0] == 12] or cuda
-    if cuda12:
-        v = max(_cuda_ver(a["name"]) for a in cuda12)
-        main = [a for a in cuda12 if a["name"].startswith("llama") and _cuda_ver(a["name"]) == v]
-        rt = [a for a in cuda12 if a["name"].startswith("cudart") and _cuda_ver(a["name"]) == v]
-        if main:
-            return main[0], (rt[0] if rt else None)
-    vk = [a for a in zips if "vulkan" in a["name"] and a["name"].startswith("llama")]
-    if vk:
-        return vk[0], None
-    raise RuntimeError("No Windows llama.cpp build found in the latest release")
+def resolve_tag():
+    """llama.cpp's 'latest' release can be a stub that only holds nightly-tag.txt;
+    the real builds live under the bNNNN tag it points to."""
+    r = requests.get(REL + "/latest", headers={"User-Agent": "Trilion"}, timeout=30)
+    tag = r.url.rstrip("/").split("/")[-1]
+    if re.fullmatch(r"b\d+", tag):
+        return tag
+    t = requests.get(f"{REL}/download/{tag}/nightly-tag.txt", headers={"User-Agent": "Trilion"}, timeout=30)
+    t.raise_for_status()
+    return t.text.strip()
+
+
+def candidate_builds(tag):
+    """(label, main zip url, optional runtime zip url), best first."""
+    d = f"{REL}/download/{tag}/"
+    return [
+        ("CUDA 12.4", d + f"llama-{tag}-bin-win-cuda-12.4-x64.zip", d + "cudart-llama-bin-win-cuda-12.4-x64.zip"),
+        ("Vulkan", d + f"llama-{tag}-bin-win-vulkan-x64.zip", None),
+        ("CPU", d + f"llama-{tag}-bin-win-cpu-x64.zip", None),
+    ]
+
+
+def exists(url):
+    try:
+        return requests.head(url, allow_redirects=True, timeout=20, headers={"User-Agent": "Trilion"}).status_code == 200
+    except requests.RequestException:
+        return False
 
 
 class LlamaServer:
@@ -69,18 +80,17 @@ class LlamaServer:
             prog(1, "Engine ready")
             return
         prog(0, "Finding llama.cpp engine…")
-        rel = requests.get(
-            "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest",
-            headers={"Accept": "application/vnd.github+json", "User-Agent": "Trilion"}, timeout=30,
-        ).json()
-        main, rt = pick_assets(rel["assets"])
-        log.info("llama.cpp %s: %s / %s", rel.get("tag_name"), main["name"], rt and rt["name"])
+        tag = resolve_tag()
+        label, url_main, url_rt = next((c for c in candidate_builds(tag) if exists(c[1])), (None,) * 3)
+        if not url_main:
+            raise RuntimeError(f"No Windows llama.cpp build found for {tag}")
+        log.info("llama.cpp %s (%s): %s", tag, label, url_main)
         tmp = sub("downloads")
-        zmain = download(main["browser_download_url"], tmp / main["name"],
-                         lambda d, t: prog(0.8 * d / max(t, 1), "Downloading engine…"))
+        zmain = download(url_main, tmp / url_main.split("/")[-1],
+                         lambda d, t: prog(0.8 * d / max(t, 1), f"Downloading engine ({label})…"))
         zrt = None
-        if rt:
-            zrt = download(rt["browser_download_url"], tmp / rt["name"],
+        if url_rt:
+            zrt = download(url_rt, tmp / url_rt.split("/")[-1],
                            lambda d, t: prog(0.8 + 0.15 * d / max(t, 1), "Downloading CUDA runtime…"))
         prog(0.96, "Unpacking engine…")
         for z in (zmain, zrt):
