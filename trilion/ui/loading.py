@@ -37,18 +37,31 @@ class LoadingWindow(QWidget):
         self.btns.setLayout(row)
         self.retry = QPushButton("Retry")
         self.quit = QPushButton("Quit")
-        for b in (self.retry, self.quit):
+        self.copy = QPushButton("Copy log")
+        self.folder = QPushButton("Open logs")
+        self.copy.clicked.connect(self._copy)
+        self.folder.clicked.connect(self._folder)
+        for b in (self.retry, self.copy, self.folder, self.quit):
             b.setStyleSheet(STYLE)
             b.setCursor(Qt.PointingHandCursor)
             row.addWidget(b)
         self.retry.clicked.connect(lambda: self.on_retry and self.on_retry())
         self.quit.clicked.connect(QApplication.quit)
-        self.btns.setGeometry(210, 335, 260, 38)
+        self.btns.setGeometry(110, 335, 460, 38)
         self.btns.hide()
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.timer.start(16)
+
+    def _copy(self):
+        from ..paths import collect_logs
+        QApplication.clipboard().setText(collect_logs())
+        self.copy.setText("Copied!")
+
+    def _folder(self):
+        from ..paths import open_logs_folder
+        open_logs_folder()
 
     def set_progress(self, frac, text):
         self.error = None
@@ -58,6 +71,7 @@ class LoadingWindow(QWidget):
 
     def set_error(self, text):
         self.error = text
+        self.copy.setText("Copy log")
         self.btns.show()
 
     def _tick(self):

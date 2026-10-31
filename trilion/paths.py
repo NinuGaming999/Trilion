@@ -75,3 +75,28 @@ def setup_logging():
     fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     log.addHandler(fh)
     return log
+
+
+def collect_logs(n=160):
+    """Text for the 'Copy log' buttons: app log + engine log tail + settings."""
+    import platform
+    parts = [f"Trilion {__import__('trilion').__version__} / {platform.platform()}"]
+    for title, f in (("trilion.log", "trilion.log"), ("llama-server.log", "llama-server.log")):
+        try:
+            lines = (sub("logs") / f).read_text(encoding="utf-8", errors="ignore").splitlines()[-n:]
+            parts.append(f"===== {title} (last {len(lines)} lines) =====\n" + "\n".join(lines))
+        except Exception:
+            parts.append(f"===== {title}: (none) =====")
+    try:
+        parts.append("===== config.json =====\n" + (app_dir() / "config.json").read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return "\n\n".join(parts)
+
+
+def open_logs_folder():
+    import os
+    try:
+        os.startfile(str(sub("logs")))
+    except Exception:
+        pass

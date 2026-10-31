@@ -66,12 +66,23 @@ class Boot(QThread):
             rt.tts = TTS(voice_dir, cfg)
             e(0.9, "Opening audio devices…")
             rt.player = Player(self.bridge.out_level.emit)
-            rt.listener = Listener(self.bridge.mic_level.emit,
-                                   lambda m: self.bridge.message.emit("error", m))
+            rt.warnings = []
+
+            def warn(m):
+                rt.warnings.append(m)
+                self.bridge.message.emit("error", m)
+            rt.listener = Listener(self.bridge.mic_level.emit, warn)
             rt.listener.device = cfg.get("mic_device")
             e(1, "Senses online")
             rt.llm.wait_ready(self._cb("wait"))
-            rt.listener.start()
+            try:
+                rt.listener.start()
+            except Exception as mic_err:  # never block startup because of the microphone
+                log.error("mic failed: %s", mic_err)
+                cfg["mic_device"] = None
+                cfg.save()
+                warn(f"The microphone could not be opened ({mic_err}). Pick another one in the dropdown, "
+                     "or use the Talk/typing box. Also check Windows Settings > Privacy > Microphone.")
             self.progress.emit(1.0, "Ready")
             self.ready.emit(rt)
         except Exception as ex:

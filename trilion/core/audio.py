@@ -11,6 +11,21 @@ SR_IN = 16000
 SR_OUT = 24000
 
 
+def find_input_index(name):
+    """Resolve a saved device name to ONE index (names repeat across Windows audio APIs)."""
+    try:
+        default_api = sd.default.hostapi
+        best = None
+        for i, d in enumerate(sd.query_devices()):
+            if d["max_input_channels"] > 0 and d["name"] == name:
+                if d["hostapi"] == default_api:
+                    return i
+                best = best if best is not None else i
+        return best
+    except Exception:
+        return None
+
+
 class Listener:
     def __init__(self, on_level, on_warn=None):
         self.on_level = on_level
@@ -18,6 +33,7 @@ class Listener:
         self.on_utterance = None          # on_utterance(audio, forced=False)
         self.gate = lambda: False         # True -> ignore the mic right now
         self.device = None
+        self.rate = SR_IN
         self.stream = None
         self.floor = 0.003
         self.manual = False
@@ -40,9 +56,32 @@ class Listener:
         self.started = time.monotonic()
         self.peak_seen = 0.0
         self.warned = False
-        self.stream = sd.InputStream(samplerate=SR_IN, channels=1, dtype="float32", blocksize=512,
-                                     device=self.device, callback=self._cb)
-        self.stream.start()
+        dev = self.device
+        if isinstance(dev, str):
+            dev = find_input_index(dev)
+        try:
+            self._open(dev)
+        except Exception as e:
+            if dev is None:
+                raise
+            self.on_warn(f"Could not open that microphone ({e}). Using the Windows default instead.")
+            self.device = None
+            self._open(None)
+
+    def _open(self, dev):
+        info = sd.query_devices(dev, "input") if dev is not None else sd.query_devices(kind="input")
+        last = None
+        for rate in (SR_IN, int(info.get("default_samplerate") or SR_IN)):
+            try:
+                self.rate = rate
+                self.stream = sd.InputStream(samplerate=rate, channels=1, dtype="float32",
+                                             blocksize=int(512 * rate / SR_IN), device=dev, callback=self._cb)
+                self.stream.start()
+                return
+            except Exception as e:
+                last = e
+                self.stream = None
+        raise last
 
     def stop(self):
         if self.stream:
@@ -73,6 +112,9 @@ class Listener:
 
     def _cb(self, indata, frames, t, status):
         x = indata[:, 0].copy()
+        if self.rate != SR_IN:
+            x = np.interp(np.linspace(0, len(x) - 1, max(1, int(len(x) * SR_IN / self.rate))),
+                          np.arange(len(x)), x).astype(np.float32)
         rms = float(np.sqrt(np.mean(x * x)))
         now = time.monotonic()
         self.peak_seen = max(self.peak_seen, rms)

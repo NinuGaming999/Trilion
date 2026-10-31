@@ -73,6 +73,10 @@ class MainWindow(QWidget):
         self.meter.setMinimumWidth(190)
         row0.addWidget(self.meter)
         row0.addStretch()
+        b_copy = QPushButton("Copy log")
+        b_copy.setToolTip("Copy the diagnostic log to the clipboard")
+        b_copy.clicked.connect(self._copy_log)
+        row0.addWidget(b_copy)
         lay.addLayout(row0)
 
         self.log = QTextBrowser()
@@ -103,6 +107,8 @@ class MainWindow(QWidget):
         bridge.confirm_req.connect(self._on_confirm)
         self._add("assistant", "Online. Click Talk and speak, or just talk (watch the MIC meter), or type below.")
 
+        for m in getattr(rt, "warnings", []):
+            self._add("error", m)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.timer.start(16)
@@ -120,24 +126,28 @@ class MainWindow(QWidget):
         self.dev.blockSignals(True)
         self.dev.clear()
         self.dev.addItem("Default microphone", None)
+        want = self.rt.cfg.get("mic_device")
+        pick = 0
         try:
+            seen = set()
             api = sd.query_hostapis(sd.default.hostapi)
             for i in api["devices"]:
                 d = sd.query_devices(i)
-                if d["max_input_channels"] > 0:
-                    self.dev.addItem(d["name"], d["name"])
+                if d["max_input_channels"] > 0 and d["name"] not in seen:
+                    seen.add(d["name"])
+                    self.dev.addItem(d["name"], i)  # store the index: names are not unique
+                    if d["name"] == want:
+                        pick = self.dev.count() - 1
         except Exception:
             pass
-        want = self.rt.cfg.get("mic_device")
-        i = self.dev.findData(want)
-        self.dev.setCurrentIndex(max(0, i))
+        self.dev.setCurrentIndex(pick)
         self.dev.blockSignals(False)
 
     def _pick_dev(self, _):
-        name = self.dev.currentData()
-        self._cfg("mic_device", name)
+        idx = self.dev.currentData()
+        self._cfg("mic_device", self.dev.currentText() if idx is not None else None)
         try:
-            self.rt.listener.set_device(name)
+            self.rt.listener.set_device(idx)
         except Exception as e:
             self._add("error", f"Could not open that microphone: {e}")
 
@@ -148,6 +158,11 @@ class MainWindow(QWidget):
             self.state_lbl.setText("RECORDING")
         else:
             self.rt.listener.end_manual()
+
+    def _copy_log(self):
+        from ..paths import collect_logs
+        QApplication.clipboard().setText(collect_logs())
+        self._add("heard", "Log copied to the clipboard - paste it into the chat.")
 
     def _stop(self):
         self.b_talk.setChecked(False)
