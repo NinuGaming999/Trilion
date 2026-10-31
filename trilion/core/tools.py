@@ -22,20 +22,20 @@ SEEING
 look {}                                   - fresh screenshot
 zoom {"x":100,"y":200,"w":400,"h":200}    - read small text: native-resolution close-up of a region (screenshot coords)
 list_windows {}                           - titles of open windows
-ui_list {"window":"Notepad"}              - list buttons/fields/menus BY NAME in a window (window optional = front window)
+ui_list {"window":"<window title>"}              - list buttons/fields/menus BY NAME in a window (window optional = front window)
 APPS & WINDOWS
-open_app {"name":"notepad"}               - launch an app, file, folder or shortcut by name/path
-play_youtube {"query":"lofi hip hop"}     - find a YouTube video by search words and open the top result (then look to confirm it is right)
-open_search {"site":"youtube","query":"lofi music"} - open a site's search page (youtube, google, maps, spotify, wikipedia, github, amazon, images)
+open_app {"name":"<app name>"}               - launch an app, file, folder or shortcut by name/path
+play_youtube {"query":"<search words>"}     - find a YouTube video by search words and open the top result (then look to confirm it is right)
+open_search {"site":"youtube","query":"<search words>"} - open a site's search page (youtube, google, maps, spotify, wikipedia, github, amazon, images)
 open_url {"url":"https://..."}            - open a link (only links you found with web_search/open_search/fetch_url, or the user gave you)
-focus_window {"title":"Chrome"}           - bring a window to the front (title substring)
+focus_window {"title":"<window title>"}           - bring a window to the front (title substring)
 MOUSE & KEYBOARD
-ui_click {"name":"Save","window":"Notepad","double":false} - click a control BY NAME (best choice; no pixel guessing)
-ui_type {"name":"Search","text":"hello","enter":true}      - click a text field by name and type
+ui_click {"name":"<control name>","window":"<window title>","double":false} - click a control BY NAME (best choice; no pixel guessing)
+ui_type {"name":"<field name>","text":"<text>","enter":false}      - click a text field by name and type
 click {"x":100,"y":200,"button":"left","double":false} - click at screenshot pixel coords (fallback)
 drag {"x1":10,"y1":10,"x2":300,"y2":200}  - drag with the mouse
 move {"x":100,"y":200}   scroll {"amount":-5} (negative = down)
-type_text {"text":"hello","enter":false}  - type at the cursor
+type_text {"text":"<text>","enter":false}  - type at the cursor
 press_keys {"keys":"ctrl+s"}              - key or combo: enter, win, alt+tab, win+d, volumeup, volumedown, volumemute, playpause, nexttrack ...
 clipboard_get {}   clipboard_set {"text":"..."}
 wait {"seconds":2}

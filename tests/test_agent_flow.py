@@ -104,3 +104,31 @@ def test_open_notepad_runs_instantly_without_the_model(monkeypatch):
     assert ran == [{"tool": "open_app", "args": {"name": "notepad"}}]
     assert rt.llm.seen == []
     assert ("assistant", "Opening notepad.") in b.message.items
+
+
+def test_repeated_action_loop_is_stopped(monkeypatch):
+    monkeypatch.setattr(screen, "grab", lambda *a, **k: ("QUJD", (1280, 720)))
+    rt = RT()
+    same = 'Doing it. <action>{"tool": "open_app", "args": {"name": "notepad"}}</action>'
+    rt.llm = FakeLLM([same] * 8)
+    b = Bridge()
+    a = agent_mod.Assistant(rt, b)
+    ran = []
+    a.tools.run = lambda act: ran.append(act) or "Opened notepad."
+    a.submit_text("tell me about the weather somehow")
+    for _ in range(100):
+        time.sleep(0.05)
+        if not a.busy:
+            break
+    assert len(ran) == 1                      # ran once, the repeat was refused
+    assert len(rt.llm.seen) == 2              # and the loop ended on the second reply
+
+
+def test_system_prompt_has_no_copyable_open_notepad_example():
+    assert "open notepad" not in agent_mod.SYSTEM.lower()
+    assert "do NOT use any tool" in agent_mod.SYSTEM
+
+
+def test_tool_docs_have_no_copyable_app_examples():
+    from trilion.core.tools import TOOL_DOCS
+    assert "notepad" not in TOOL_DOCS.lower()

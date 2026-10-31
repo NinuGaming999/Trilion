@@ -25,12 +25,8 @@ To use tools, end your reply with one or more action tags, exactly like this:
 <action>{{"tool": "open_app", "args": {{"name": "notepad"}}}}</action>
 You will then receive the results and a fresh screenshot, and continue. When the task is finished, \
 reply normally with no action tag.
-Examples:
-User: open notepad
-You: Opening Notepad. <action>{{"tool": "open_app", "args": {{"name": "notepad"}}}}</action>
-User: what is on my screen
-You: You have a browser open on a video page.
-Never write a tool name as plain words; a command only works inside the action tag. Say briefly what you are about to do before acting.
+Never write a tool name as plain words; a command only works inside the action tag.
+Only use a tool when the user asked you to DO something. For questions, chat, or unclear speech, just answer in words (or ask what they mean) and do NOT use any tool. Say briefly what you are about to do before acting.
 
 You can do almost anything on this PC: open and operate apps, browse and search the web, manage files, \
 run PowerShell/cmd commands for system tasks, and write Python. Break big jobs into steps and keep going \
@@ -273,6 +269,11 @@ class Assistant:
                         if forced:
                             self.bridge.message.emit("heard", "(could not make out any words)")
                         continue
+                    if not forced and len(text.split()) < 2:
+                        from . import intents
+                        if not intents.match(text):
+                            log.info("ignored one-word noise: %s", text)
+                            continue
                     active = time.time() - self.last_active < 45
                     if self.cfg.get("wake_word", False) and not forced and not active and not WAKE_RE.search(text):
                         log.info("ignored (no wake word): %s", text)
@@ -357,6 +358,7 @@ class Assistant:
             return
         self._state("thinking")
         self.history.append(self._user_msg(text, self.cfg.get("watch_screen", True)))
+        last_sig = None
         for _ in range(int(self.cfg.get("max_steps", 8))):
             if self.cancel.is_set():
                 break
@@ -372,6 +374,11 @@ class Assistant:
             actions = parse_actions(full)
             if not actions or self.cancel.is_set():
                 break
+            sig = json.dumps(actions, sort_keys=True, ensure_ascii=False)
+            if sig == last_sig:  # the model is looping on the same command: stop instead of repeating it
+                self._speak("I seem to be repeating myself, so I stopped.")
+                break
+            last_sig = sig
             self.speaker.wait_done()
             self._state("acting")
             results, need_shot = [], False
@@ -385,7 +392,9 @@ class Assistant:
                 self.bridge.message.emit("action", f"{a.get('tool')} {json.dumps(a.get('args', {}), ensure_ascii=False)[:90]}")
                 results.append(f"{a.get('tool')}: {self.tools.run(a)}")
                 need_shot |= a.get("tool") in SCREEN_TOOLS
-            msg = "Tool results:\n" + "\n".join(results)
+            msg = ("Tool results:\n" + "\n".join(results) +
+                   "\nIf the user's request is now done, reply with ONE short spoken sentence and NO action tag. "
+                   "Never repeat an action that already succeeded.")
             um = self._user_msg(msg, need_shot or self.cfg.get("watch_screen", True))
             if self.tools.extra_image:
                 b64z, (zw, zh) = self.tools.extra_image
