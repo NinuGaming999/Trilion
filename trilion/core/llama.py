@@ -149,7 +149,8 @@ class LlamaServer:
         self.port = _free_port()
         cmd = [str(exe), "-m", str(gguf), "--mmproj", str(mm), "--host", "127.0.0.1",
                "--port", str(self.port), "-ngl", str(self.cfg["gpu_layers"]),
-               "-c", str(self.cfg["context"]), "--alias", "trilion"]
+               "-c", str(self.cfg["context"]), "--alias", "trilion",
+               "--image-min-tokens", "1024"]
         logf = open(sub("logs") / "llama-server.log", "wb")
         self.proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
                                      cwd=str(exe.parent), creationflags=NO_WINDOW)

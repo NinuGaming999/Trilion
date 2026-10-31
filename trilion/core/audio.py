@@ -48,6 +48,7 @@ class Listener:
         self.buf = []
         self.speaking = False
         self.loud = 0
+        self.voiced = 0
         self.last_voice = 0.0
         self.t_start = 0.0
 
@@ -133,7 +134,7 @@ class Listener:
             self.on_level(0.0)
             return
         self.on_level(min(1.0, rms * 14))
-        thr = max(0.006, self.floor * 3.0)
+        thr = max(0.007, self.floor * 3.2)
         if not self.speaking:
             if rms < thr:
                 self.floor = 0.97 * self.floor + 0.03 * rms
@@ -147,11 +148,14 @@ class Listener:
             self.buf.append(x)
             if rms > thr:
                 self.last_voice = now
+                self.voiced += 1
             if now - self.last_voice > 0.9 or now - self.t_start > 25:
                 audio = np.concatenate(self.buf)
                 dur = now - self.t_start
+                voiced = self.voiced
                 self._reset()
-                if dur > 0.5 and self.on_utterance:
+                # a real phrase has enough voiced blocks; keyboard clicks / door slams do not
+                if dur > 0.6 and voiced >= 8 and self.on_utterance:
                     self.on_utterance(audio, False)
 
 

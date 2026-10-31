@@ -24,7 +24,13 @@ Your replies are spoken aloud, so: 1-3 short sentences, plain words, no markdown
 To use tools, end your reply with one or more action tags, exactly like this:
 <action>{{"tool": "open_app", "args": {{"name": "notepad"}}}}</action>
 You will then receive the results and a fresh screenshot, and continue. When the task is finished, \
-reply normally with no action tag. Say briefly what you are about to do before acting.
+reply normally with no action tag.
+Examples:
+User: open notepad
+You: Opening Notepad. <action>{{"tool": "open_app", "args": {{"name": "notepad"}}}}</action>
+User: what is on my screen
+You: You have a browser open on a video page.
+Never write a tool name as plain words; a command only works inside the action tag. Say briefly what you are about to do before acting.
 
 You can do almost anything on this PC: open and operate apps, browse and search the web, manage files, \
 run PowerShell/cmd commands for system tasks, and write Python. Break big jobs into steps and keep going \
@@ -50,19 +56,66 @@ Tools:
 """
 
 
+TOOL_NAMES = ("open_app", "open_url", "open_search", "play_youtube", "search_site", "look", "zoom", "ui_list",
+              "ui_click", "ui_type", "click", "drag", "move", "scroll", "type_text", "press_keys", "wait",
+              "list_windows", "focus_window", "clipboard_get", "clipboard_set", "web_search", "fetch_url",
+              "list_dir", "read_file", "write_file", "run_shell", "run_python", "use_skill", "list_skills",
+              "create_skill", "run_skill_script", "remember", "forget")
+# only names with an underscore are unambiguous (plain words like "look" or "wait" are normal speech)
+TOOL_WORD_RE = re.compile(r"\b(" + "|".join(n for n in TOOL_NAMES if "_" in n) + r")\b")
+MARKERS = ("<action>", "```", '{"tool"', "{ \"tool\"", "{'tool'")
+_DEC = json.JSONDecoder()
+
+
+def _norm(d):
+    if not isinstance(d, dict) or "tool" not in d:
+        return None
+    args = d.get("args")
+    if not isinstance(args, dict):
+        args = {k: v for k, v in d.items() if k not in ("tool", "args")}
+    return {"tool": str(d["tool"]).strip(), "args": args}
+
+
 def parse_actions(text):
+    """Accept the proper <action>{...}</action> form, but also the sloppy forms small models produce:
+    bare/fenced JSON, 'open_app(name="notepad")', or 'open app notepad'."""
     out = []
     for m in ACTION_RE.finditer(text):
         try:
-            out.append(json.loads(m.group(1)))
+            d = _norm(json.loads(m.group(1)))
         except Exception:
-            out.append({"tool": "_bad", "args": {}, "raw": m.group(1)})
+            d = None
+        out.append(d or {"tool": "_bad", "args": {}, "raw": m.group(1)})
+    if out:
+        return out
+    for m in re.finditer(r"\{", text):  # bare or fenced JSON anywhere in the reply
+        try:
+            obj, _ = _DEC.raw_decode(text[m.start():])
+        except Exception:
+            continue
+        d = _norm(obj)
+        if d:
+            out.append(d)
+    if out:
+        return out
+    m = re.search(r"\b(open[_ ]app)\b\s*[:(=]?\s*(?:name\s*=\s*)?[\"']?([A-Za-z0-9 ._:\\/+-]{1,60}?)[\"')]*\s*(?:[.\n]|$)", text, re.I)
+    if m and m.group(2).strip():
+        return [{"tool": "open_app", "args": {"name": m.group(2).strip()}}]
+    m = re.search(r"\b(open[_ ]url)\s*[:(=]?\s*(?:url\s*=\s*)?[\"']?(https?://[^\s\"')]+)", text, re.I)
+    if m:
+        return [{"tool": "open_url", "args": {"url": m.group(2)}}]
     return out
 
 
 def strip_actions(text):
     t = ACTION_RE.sub("", text)
-    t = re.sub(r"<action>.*", "", t, flags=re.S)
+    cut = len(t)
+    for mk in MARKERS:
+        i = t.find(mk)
+        if i >= 0:
+            cut = min(cut, i)
+    t = t[:cut]
+    t = "\n".join(l for l in t.splitlines() if not TOOL_WORD_RE.search(l) and not re.search(r"\bopen app\b", l, re.I))
     return t.strip()
 
 
@@ -79,14 +132,24 @@ class Streamer:
         self.emit, self.text, self.spoken = emit, "", 0
 
     def _visible(self, final):
-        i = self.text.find("<action>")
-        if i >= 0:
-            return self.text[:i]
-        if not final:
-            j = self.text.rfind("<")
-            if j >= 0 and "<action>".startswith(self.text[j:]):
-                return self.text[:j]
+        cut = len(self.text)
+        for mk in MARKERS:
+            i = self.text.find(mk)
+            if i >= 0:
+                cut = min(cut, i)
+        if cut < len(self.text):
+            return self.text[:cut]
+        if not final:  # hold back a possible half-typed marker at the very end
+            for j in range(max(0, len(self.text) - 8), len(self.text)):
+                tail = self.text[j:]
+                if any(mk.startswith(tail) for mk in MARKERS):
+                    return self.text[:j]
         return self.text
+
+    def _say(self, sentence):
+        if TOOL_WORD_RE.search(sentence) or re.search(r"\bopen app\b", sentence, re.I):
+            return  # the model is "reading out" a command instead of running it: never speak that
+        self.emit(sentence)
 
     def feed(self, delta):
         self.text += delta
@@ -96,14 +159,14 @@ class Streamer:
         for m in re.finditer(r"[.!?]\s|\n", seg):
             end = m.end()
         if end:
-            self.emit(seg[:end])
+            self._say(seg[:end])
             self.spoken += end
 
     def finish(self):
         vis = self._visible(True)
         rest = vis[self.spoken:]
         if rest.strip():
-            self.emit(rest)
+            self._say(rest)
         self.spoken = len(vis)
 
 
@@ -207,7 +270,8 @@ class Assistant:
                     self._state("thinking")
                     text = self.rt.stt.transcribe(payload)
                     if not text:
-                        self.bridge.message.emit("heard", "(could not make out any words)")
+                        if forced:
+                            self.bridge.message.emit("heard", "(could not make out any words)")
                         continue
                     active = time.time() - self.last_active < 45
                     if self.cfg.get("wake_word", False) and not forced and not active and not WAKE_RE.search(text):
@@ -255,6 +319,33 @@ class Assistant:
         while self.history and self.history[0]["role"] != "user":
             self.history.pop(0)
 
+    def _quick(self, text):
+        """Simple commands run instantly without asking the model."""
+        from . import intents
+        try:
+            hit = intents.match(text)
+        except Exception:
+            return False
+        if not hit:
+            return False
+        speech, action = hit
+        note = ""
+        if action:
+            self._state("acting")
+            self.bridge.message.emit("action", f"{action['tool']} {json.dumps(action['args'], ensure_ascii=False)[:90]}")
+            res = self.tools.run(action)
+            bad = res.lower().startswith(("blocked", "unknown", "bad arguments")) or " failed:" in res.lower()
+            if bad:
+                speech = "Sorry, that did not work."
+                self.bridge.message.emit("error", res[:200])
+            note = f" [did {action['tool']}: {res[:80]}]"
+        self.bridge.message.emit("assistant", speech)
+        self._speak(speech)
+        self.history.append({"role": "user", "content": text})
+        self.history.append({"role": "assistant", "content": speech + note})
+        self._trim()
+        return True
+
     def _speak(self, sentence):
         self._state("speaking")
         self.speaker.say(sentence)
@@ -262,6 +353,8 @@ class Assistant:
     def _turn(self, text, show_user=True):
         self.bridge.message.emit("user", text)
         self.tools.note_text(text)
+        if self._quick(text):
+            return
         self._state("thinking")
         self.history.append(self._user_msg(text, self.cfg.get("watch_screen", True)))
         for _ in range(int(self.cfg.get("max_steps", 8))):

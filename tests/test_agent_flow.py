@@ -72,7 +72,7 @@ def test_full_turn_with_skill_and_memory(monkeypatch):
     ])
     b = Bridge()
     a = agent_mod.Assistant(rt, b)
-    a.submit_text("play some lofi")
+    a.submit_text("I would like to listen to something relaxing")
     for _ in range(100):
         time.sleep(0.05)
         if not a.busy:
@@ -86,3 +86,21 @@ def test_full_turn_with_skill_and_memory(monkeypatch):
     assert "lofi" in a.memory.prompt_block()
     # memory is injected on later turns
     assert "User likes lofi" in rt.llm.seen[2][0]["content"]
+
+
+def test_open_notepad_runs_instantly_without_the_model(monkeypatch):
+    monkeypatch.setattr(screen, "grab", lambda *a, **k: ("QUJD", (1280, 720)))
+    rt = RT()
+    rt.llm = FakeLLM([])          # would raise if the model were asked
+    b = Bridge()
+    a = agent_mod.Assistant(rt, b)
+    ran = []
+    a.tools.run = lambda act: ran.append(act) or "Opened notepad."
+    a.submit_text("open notepad")
+    for _ in range(100):
+        time.sleep(0.05)
+        if not a.busy:
+            break
+    assert ran == [{"tool": "open_app", "args": {"name": "notepad"}}]
+    assert rt.llm.seen == []
+    assert ("assistant", "Opening notepad.") in b.message.items
