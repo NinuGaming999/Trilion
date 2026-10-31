@@ -22,7 +22,7 @@ You can SEE their screen (a screenshot is attached to their messages) and CONTRO
 Your replies are spoken aloud, so: 1-3 short sentences, plain words, no markdown, no lists, no emojis.
 
 To use tools, end your reply with one or more action tags, exactly like this:
-<action>{{"tool": "open_app", "args": {{"name": "notepad"}}}}</action>
+<action>{{"tool": "<tool name>", "args": {{<arguments from the tool list>}}}}</action>
 You will then receive the results and a fresh screenshot, and continue. When the task is finished, \
 reply normally with no action tag.
 Never write a tool name as plain words; a command only works inside the action tag.

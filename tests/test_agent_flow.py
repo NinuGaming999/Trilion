@@ -125,7 +125,7 @@ def test_repeated_action_loop_is_stopped(monkeypatch):
 
 
 def test_system_prompt_has_no_copyable_open_notepad_example():
-    assert "open notepad" not in agent_mod.SYSTEM.lower()
+    assert "notepad" not in agent_mod.SYSTEM.lower()
     assert "do NOT use any tool" in agent_mod.SYSTEM
 
 
