@@ -28,6 +28,16 @@ If Q6_K is too big for your GPU, set `"llm_quant_override": "Q4_K_M"`.
 - **Skills:** folders with a `SKILL.md` in `%LOCALAPPDATA%\Trilion\skills\`. Trilion loads one when your request matches it. Built in: play-media, research-topic, organize-folder, system-check, take-notes, daily-briefing, operate-app, learn-skill. Say *"Trilion, learn how to do this"* to have it write a new skill, or add your own folder (optionally with `.ps1` / `.py` scripts it can run).
 - **Memory:** tell it "remember that ..." and it keeps facts between sessions (`memory.json`); say "forget ..." to remove them.
 
+## Playing games (v0.5)
+Trilion plays the way a person does: it looks at the screen and uses **only the keyboard and mouse** - no game files, memory or add-ons.
+Say *"Trilion, start playing <game>"* (the game window must be open, ideally borderless-windowed). It asks once, then plays in short steps: look, send one timed action, look again.
+- Keys are sent as hardware **scan codes**, which DirectX games accept (plain key presses are often ignored).
+- The mouse moves in **relative counts**, spread smoothly over time, so camera/aim moves are exact (a 100-count move is always exactly 100).
+- Held keys are always released on **Ctrl+Alt+S**, on quit, and by a 3-second dead-man timer.
+- Input is only sent while the game window is in front.
+- A local 7-9B model decides about once per second or two: good for turn-based, puzzle, card, strategy, point-and-click and slow exploration games; not for twitch shooters or rhythm games.
+- Use it for **single-player games**. Online games with anti-cheat may block fake input or ban the account. If a game runs as administrator, start Trilion as administrator too.
+
 ## Keys and tray
 `Ctrl+Alt+T` talk on/off from anywhere - `Ctrl+Alt+S` stop everything. The tray icon menu has Show, Talk, Stop, *Start with Windows* and *Close button hides to tray*.
 Slam the mouse into a screen corner to abort mouse control.

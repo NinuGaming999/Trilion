@@ -48,6 +48,11 @@ list_dir {"path":"C:/Users"}   read_file {"path":"C:/a.txt"}
 write_file {"path":"C:/a.txt","content":"..."}   - asks the user
 run_shell {"command":"..."}               - cmd/PowerShell (e.g. powershell -c "..."); asks the user
 run_python {"code":"print(2+2)"}          - run Python for calculations or data work; asks the user
+GAMES (real keyboard and mouse only; single-player games)
+game_mode {"on":true,"window":"<game window title>"} - start or stop game mode (asks the user once; stopping releases every key)
+game_act {"hold":"<keys, comma separated>","tap":"<keys>","dx":0,"dy":0,"click":"<left|right|middle>","scroll":0,"ms":500,"keep":false} - ONE timed action: keys in hold stay down for ms, then release; dx/dy move the mouse in counts (camera/aim); tap presses keys once. Keys: a-z 0-9 space enter esc tab shift ctrl alt up down left right f1-f12
+game_click {"x":0,"y":0,"button":"left","double":false} - click a spot in a menu (same coordinates as the screenshot)
+game_release {} - let go of every key and mouse button
 SKILLS & MEMORY
 use_skill {"name":"play-media"}           - load a skill's step-by-step instructions
 list_skills {}                            - all skills
@@ -56,7 +61,7 @@ run_skill_script {"skill":"my-skill","script":"do.ps1","args":""} - run a script
 remember {"fact":"The user's city is Dhaka"}   forget {"fact":"city"}"""
 
 RISKY = {"run_shell", "write_file", "run_python", "run_skill_script"}
-SCREEN_TOOLS = {"open_app", "open_url", "open_search", "look", "click", "move", "scroll", "type_text",
+SCREEN_TOOLS = {"game_act", "game_click", "game_mode", "open_app", "open_url", "open_search", "look", "click", "move", "scroll", "type_text",
                 "press_keys", "wait", "drag", "focus_window", "ui_click", "ui_type", "play_youtube", "search_site"}
 
 SEARCH_SITES = {
@@ -88,6 +93,9 @@ class Tools:
         self.extra_image = None  # (b64, (w,h)) a tool wants shown to the model
         self.known_urls = set()  # links the model may open: user-given or found via search
         self._ui_map = {}        # id -> (x, y, name, type) from the last ui_list
+        self.game = None         # GameInput while game mode is on
+        self.game_window = ""    # title text of the game window that must be in front
+        self.game_backend = None  # tests inject a recording backend here
 
     def note_text(self, text):
         for u in URL_RE.findall(text or ""):
@@ -481,6 +489,71 @@ class Tools:
         self.t_type_text(text, enter=enter)
         return f"Typed into '{nm[:50]}'."
 
+    # ---- games: real keyboard and mouse only ----
+    @property
+    def game_on(self):
+        return self.game is not None
+
+    def release_game(self):
+        if self.game:
+            self.game.release_all()
+
+    def _foreground_title(self):
+        if os.name != "nt":
+            return ""
+        u = ctypes.windll.user32
+        h = u.GetForegroundWindow()
+        n = u.GetWindowTextLengthW(h)
+        buf = ctypes.create_unicode_buffer(n + 1)
+        u.GetWindowTextW(h, buf, n + 1)
+        return buf.value
+
+    def _game_ready(self):
+        if not self.game:
+            raise RuntimeError("Game mode is off. Call game_mode first.")
+        if self.game_window and self.game_window.lower() not in self._foreground_title().lower():
+            self.t_focus_window(self.game_window)
+            if self.game_window.lower() not in self._foreground_title().lower():
+                raise RuntimeError(f"The game window '{self.game_window}' is not in front, so nothing was sent.")
+
+    def t_game_mode(self, on=True, window=""):
+        if not on:
+            self.release_game()
+            self.game, self.game_window = None, ""
+            return "Game mode off. All keys and buttons released."
+        if self.game:
+            self.game_window = window or self.game_window
+            return f"Game mode already on for '{self.game_window or 'any window'}'."
+        if self.cfg.get("confirm_critical", True) and not self.confirm(
+                f"Let Trilion play '{window or 'the game in front'}' with your keyboard and mouse? "
+                "Only use this for single-player games: online games with anti-cheat may block it or ban you. "
+                "Ctrl+Alt+S stops it instantly."):
+            return "The user declined game mode."
+        from .gameinput import GameInput, WinBackend
+        backend = self.game_backend or WinBackend()
+        self.game, self.game_window = GameInput(backend), window
+        if window:
+            self.t_focus_window(window)
+        return f"Game mode on for '{window or 'the window in front'}'. Play with game_act, one short action at a time."
+
+    def t_game_act(self, hold="", tap="", dx=0, dy=0, click="", scroll=0, ms=300, keep=False):
+        self._game_ready()
+        try:
+            done = self.game.act(hold, tap, dx, dy, click, scroll, ms, keep, stop=self.cancelled)
+        except ValueError as e:
+            return f"Bad input: {e}"
+        return "Done." if done else "Interrupted; everything released."
+
+    def t_game_click(self, x, y, button="left", double=False):
+        self._game_ready()
+        sx, sy = screen.to_screen(x, y)
+        self.game.click_at(sx, sy, button, double)
+        return f"Clicked ({x},{y})."
+
+    def t_game_release(self):
+        self.release_game()
+        return "Everything released."
+
     # ---- skills & memory ----
     def t_list_skills(self):
         return "\n".join(f"{s['name']}: {s['description']}" for s in self.skills.all()) or "(no skills)"
@@ -527,9 +600,9 @@ class Tools:
 # ---------------------------------------------------------------------------
 # Strict reply format: {"say": "...", "action": null | {"tool": ..., "args": {...}}}
 # The schema is built from the tool method signatures, so it can never drift from the code.
-_NUM = {"x", "y", "w", "h", "x1", "y1", "x2", "y2", "amount", "seconds"}
+_NUM = {"x", "y", "w", "h", "x1", "y1", "x2", "y2", "amount", "seconds", "dx", "dy", "ms", "scroll"}
 _INT = {"id"}
-_BOOL = {"double", "enter"}
+_BOOL = {"double", "enter", "on", "keep"}
 
 
 LEGACY_TOOLS = {"search_site"}   # still works if called, but the model is not offered it (open_search replaces it)

@@ -74,6 +74,13 @@ def build_system(structured=False, coord_mode="pixel"):
     return _INTRO + "\n" + fmt + "\n" + _RULES.replace("{COORDS}", _COORDS.get(coord_mode, _COORDS["pixel"])) + TOOL_DOCS + "\n"
 
 
+GAME_RULES = """GAME MODE IS ON for '{WINDOW}'. You play like a human using only the keyboard and mouse.
+Each step: look at the screenshot, then send ONE short game_act (usually 200-1500 ms), then look again and correct.
+- hold: keys held down for the action's duration, then released (keep=true keeps them down until your next action; they auto-release after 3 seconds of silence).
+- tap: single key presses. dx/dy: move the mouse by that many counts (camera or aim); small corrections are better than big swings.
+- Use game_click for menus and game_release if something seems stuck. Do not use other tools unless the user asks.
+- If nothing changes after an action, check that the game window is in front and try something else."""
+
 SYSTEM = build_system(False, "pixel")  # tag-format variant (fallback); the live prompt comes from build_system()
 
 
@@ -341,6 +348,10 @@ class Assistant:
     def stop(self):
         self.cancel.set()
         self.speaker.stop()
+        try:
+            self.tools.release_game()   # never leave a key held down
+        except Exception:
+            log.exception("release failed")
 
     # ---- main loop ----
     def _state(self, s):
@@ -401,6 +412,8 @@ class Assistant:
         last_img = max((i for i, m in enumerate(self.history) if isinstance(m["content"], list)), default=-1)
         extra = "\n\n".join(b for b in (self.skills.prompt_block(), self.memory.prompt_block()) if b)
         system = build_system(self._structured(), screen.COORD["mode"])
+        if self.tools.game_on:
+            extra = (GAME_RULES.replace("{WINDOW}", self.tools.game_window or "the window in front") + "\n\n" + extra).strip()
         out = [{"role": "system", "content": system + ("\n" + extra if extra else "")}]
         for i, m in enumerate(self.history):
             c = m["content"]
@@ -456,8 +469,9 @@ class Assistant:
             return
         self._state("thinking")
         self.history.append(self._user_msg(text, self.cfg.get("watch_screen", True)))
-        last_sig = None
-        for _ in range(int(self.cfg.get("max_steps", 8))):
+        last_sig, repeats, step = None, 0, 0
+        while step < (int(self.cfg.get("game_max_steps", 60)) if self.tools.game_on else int(self.cfg.get("max_steps", 8))):
+            step += 1
             if self.cancel.is_set():
                 break
             structured = self._structured()
@@ -477,7 +491,9 @@ class Assistant:
             if not actions or self.cancel.is_set():
                 break
             sig = json.dumps(actions, sort_keys=True, ensure_ascii=False)
-            if sig == last_sig:  # the model is looping on the same command: stop instead of repeating it
+            repeats = repeats + 1 if sig == last_sig else 0
+            allowed = 6 if all(str(a.get("tool", "")).startswith("game_") for a in actions) else 1
+            if repeats >= allowed:  # the model is looping on the same command: stop instead of repeating it
                 self._speak("I seem to be repeating myself, so I stopped.")
                 break
             last_sig = sig
