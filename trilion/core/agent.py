@@ -9,47 +9,72 @@ import time
 from . import screen
 from .memory import Memory
 from .skills import Skills
-from .tools import SCREEN_TOOLS, TOOL_DOCS, Tools
+from .tools import SCREEN_TOOLS, TOOL_DOCS, Tools, reply_schema
 
 log = logging.getLogger("trilion.agent")
 
 WAKE_RE = re.compile(r"\b(tri+l+[iy]?[oae]n|tri+l+ing|tri+\s?lion|try\s?lion|tri+\s?leon|trillion|trillian|trilian|trylon)\b[,.!?]?", re.I)
 ACTION_RE = re.compile(r"<action>\s*(\{.*?\})\s*</action>", re.S)
 
-SYSTEM = f"""You are Trilion, a friendly voice assistant living on the user's Windows PC. \
+_INTRO = """You are Trilion, a friendly voice assistant living on the user's Windows PC. \
 You can SEE their screen (a screenshot is attached to their messages) and CONTROL the PC with tools.
 
 Your replies are spoken aloud, so: 1-3 short sentences, plain words, no markdown, no lists, no emojis.
+"""
 
-To use tools, end your reply with one or more action tags, exactly like this:
+_FORMAT_TAGS = """To use tools, end your reply with one or more action tags, exactly like this:
 <action>{{"tool": "<tool name>", "args": {{<arguments from the tool list>}}}}</action>
 You will then receive the results and a fresh screenshot, and continue. When the task is finished, \
 reply normally with no action tag.
 Never write a tool name as plain words; a command only works inside the action tag.
-Only use a tool when the user asked you to DO something. For questions, chat, or unclear speech, just answer in words (or ask what they mean) and do NOT use any tool. Say briefly what you are about to do before acting.
+""".replace("{{", "{").replace("}}", "}")
+
+_FORMAT_JSON = """Reply ONLY with a JSON object with exactly two keys:
+"say": what you speak aloud (1-2 short plain sentences; "" if there is nothing to say).
+"action": ONE tool call as {"tool": "<tool name>", "args": {<arguments from the tool list>}}, or null when you \
+are finished or only chatting.
+After an action runs you receive its result and a fresh screenshot, then you reply again. \
+Say briefly what you are about to do in "say" before acting.
+"""
+
+_RULES = """Only use a tool when the user asked you to DO something. For questions, chat, or unclear speech, just answer in words (or ask what they mean) and do NOT use any tool.
 
 You can do almost anything on this PC: open and operate apps, browse and search the web, manage files, \
 run PowerShell/cmd commands for system tasks, and write Python. Break big jobs into steps and keep going \
 until it is done; do not give up after one failed try.
 
 Rules:
-- NEVER make up links or file paths. For videos use play_youtube; for anything else use search_site or web_search first.
+- NEVER make up links or file paths. For videos use play_youtube; for anything else use open_search or web_search first, and open only what you actually found, then look at the screen to confirm it is the right thing.
 - If the request is vague (for example "open a video" or "play something"), ask what they want instead of guessing.
 - The screenshot never shows your own window. If text is small or unclear, use zoom on that region before answering.
-- Click coordinates are pixels in the screenshot image you were shown (its size is given).
+- {COORDS}
 - Prefer open_app and keyboard shortcuts over clicking; they are more reliable.
-- Check the new screenshot before claiming something worked. If it did not, try another way or ask.
-- NEVER invent or guess a link or a video. To find something, use open_search or web_search and open only what you actually found, then look at the screen to confirm it is the right thing.
+- Prefer ui_list, then ui_click / ui_type with an [id] from that list, over pixel clicks. Fall back to the screenshot if they fail.
+- Check the new screenshot before claiming something worked. If a result says the screen did not change, your action probably failed: try another way or ask.
 - When a request matches a skill in your skills list, call use_skill FIRST and follow its steps.
-- Prefer ui_list / ui_click / ui_type (controls by name) over pixel clicks. Fall back to the screenshot if they fail.
 - When the user tells you a lasting fact or preference ("remember...", their name, city, habits), call remember.
 - After you work out a useful multi-step procedure, offer to save it with create_skill.
 - Never run destructive commands (deleting, formatting, killing system processes) unless clearly asked.
 - If the request is unclear, ask one short question.
 
 Tools:
-{TOOL_DOCS}
 """
+
+_COORDS = {
+    "pixel": "Click coordinates are pixels in the screenshot image you were shown (its size is given).",
+    "norm1000": "Click coordinates are relative: x and y each run from 0 to 1000 across the screenshot "
+                "(0,0 is the top-left corner, 1000,1000 the bottom-right).",
+    "unit": "Click coordinates are fractions: x and y each run from 0 to 1 across the screenshot "
+            "(0,0 is the top-left corner, 1,1 the bottom-right).",
+}
+
+
+def build_system(structured=False, coord_mode="pixel"):
+    fmt = _FORMAT_JSON if structured else _FORMAT_TAGS
+    return _INTRO + "\n" + fmt + "\n" + _RULES.replace("{COORDS}", _COORDS.get(coord_mode, _COORDS["pixel"])) + TOOL_DOCS + "\n"
+
+
+SYSTEM = build_system(False, "pixel")  # tag-format variant (fallback); the live prompt comes from build_system()
 
 
 TOOL_NAMES = ("open_app", "open_url", "open_search", "play_youtube", "search_site", "look", "zoom", "ui_list",
@@ -113,6 +138,70 @@ def strip_actions(text):
     t = t[:cut]
     t = "\n".join(l for l in t.splitlines() if not TOOL_WORD_RE.search(l) and not re.search(r"\bopen app\b", l, re.I))
     return t.strip()
+
+
+class SayExtractor:
+    """Pulls the text of the "say" string out of a JSON reply while it is still being generated."""
+    _ESC = {"n": "\n", "t": "\t", "r": "", '"': '"', "\\": "\\", "/": "/", "b": "", "f": ""}
+
+    def __init__(self):
+        self.buf, self.i, self.started, self.done = "", 0, False, False
+
+    def feed(self, delta):
+        if self.done:
+            return ""
+        self.buf += delta
+        if not self.started:
+            m = re.search(r'"say"\s*:\s*"', self.buf)
+            if not m:
+                return ""
+            self.started, self.i = True, m.end()
+        out = []
+        b = self.buf
+        while self.i < len(b):
+            c = b[self.i]
+            if c == '"':
+                self.done = True
+                self.i += 1
+                break
+            if c == "\\":
+                if self.i + 1 >= len(b):
+                    break
+                n = b[self.i + 1]
+                if n == "u":
+                    if self.i + 6 > len(b):
+                        break
+                    try:
+                        out.append(chr(int(b[self.i + 2:self.i + 6], 16)))
+                    except ValueError:
+                        pass
+                    self.i += 6
+                    continue
+                out.append(self._ESC.get(n, n))
+                self.i += 2
+                continue
+            out.append(c)
+            self.i += 1
+        return "".join(out)
+
+
+def parse_structured(full):
+    """Parse a {say, action} reply -> (say, [actions]). Falls back to the lenient text parsers."""
+    text = full.strip()
+    obj = None
+    try:
+        obj = json.loads(text)
+    except Exception:
+        i, j = text.find("{"), text.rfind("}")
+        if 0 <= i < j:
+            try:
+                obj = json.loads(text[i:j + 1])
+            except Exception:
+                obj = None
+    if isinstance(obj, dict) and ("say" in obj or "action" in obj):
+        act = _norm(obj.get("action")) if isinstance(obj.get("action"), dict) else None
+        return str(obj.get("say") or "").strip(), ([act] if act else [])
+    return strip_actions(full), parse_actions(full)
 
 
 def clean_for_speech(s):
@@ -223,6 +312,8 @@ class Assistant:
         self.rt, self.cfg, self.bridge = rt, rt.cfg, bridge
         self.speaker = Speaker(rt.tts, rt.player, bridge)
         self.skills, self.memory = Skills(), Memory()
+        screen.COORD["mode"] = self.cfg.get("coord_mode") or rt.llm.brain["coords"] if hasattr(rt.llm, "brain") else "pixel"
+        self._schema = None
         self.tools = Tools(self.cfg, bridge.ask, self.skills, self.memory, lambda: self.cancel.is_set())
         self.q = queue.Queue()
         self.cancel = threading.Event()
@@ -299,21 +390,27 @@ class Assistant:
         if not shot:
             return {"role": "user", "content": text}
         b64, (w, h) = screen.grab(self.cfg.get("screen_max_width", 1280))
+        size = {"pixel": f"{w}x{h} px", "norm1000": "coordinates 0-1000 on both axes",
+                "unit": "coordinates 0-1 on both axes"}.get(screen.COORD["mode"], f"{w}x{h} px")
         return {"role": "user", "content": [
-            {"type": "text", "text": f"{text}\n[Screenshot attached, {w}x{h} px]"},
+            {"type": "text", "text": f"{text}\n[Screenshot attached, {size}]"},
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
         ]}
 
     def _messages(self):
         last_img = max((i for i, m in enumerate(self.history) if isinstance(m["content"], list)), default=-1)
         extra = "\n\n".join(b for b in (self.skills.prompt_block(), self.memory.prompt_block()) if b)
-        out = [{"role": "system", "content": SYSTEM + ("\n" + extra if extra else "")}]
+        system = build_system(self._structured(), screen.COORD["mode"])
+        out = [{"role": "system", "content": system + ("\n" + extra if extra else "")}]
         for i, m in enumerate(self.history):
             c = m["content"]
             if isinstance(c, list) and i != last_img:
                 c = " ".join(p["text"] for p in c if p["type"] == "text") + " [older screenshot omitted]"
             out.append({"role": m["role"], "content": c})
         return out
+
+    def _structured(self):
+        return bool(self.cfg.get("structured", False)) and getattr(self.rt.llm, "structured_ok", True)
 
     def _trim(self):
         self.history = self.history[-14:]
@@ -343,7 +440,8 @@ class Assistant:
         self.bridge.message.emit("assistant", speech)
         self._speak(speech)
         self.history.append({"role": "user", "content": text})
-        self.history.append({"role": "assistant", "content": speech + note})
+        reply = json.dumps({"say": speech, "action": action}, ensure_ascii=False) if self._structured() else speech + note
+        self.history.append({"role": "assistant", "content": reply})
         self._trim()
         return True
 
@@ -362,16 +460,20 @@ class Assistant:
         for _ in range(int(self.cfg.get("max_steps", 8))):
             if self.cancel.is_set():
                 break
-            streamer, full = Streamer(self._speak), ""
-            for delta in self.rt.llm.chat_stream(self._messages(), cancel=self.cancel):
+            structured = self._structured()
+            streamer, full, say = Streamer(self._speak), "", SayExtractor()
+            kw = {"schema": reply_schema()} if structured else {}
+            for delta in self.rt.llm.chat_stream(self._messages(), cancel=self.cancel, **kw):
                 full += delta
-                streamer.feed(delta)
+                streamer.feed(say.feed(delta) if structured else delta)
             streamer.finish()
             self.history.append({"role": "assistant", "content": full})
-            said = strip_actions(full)
+            if structured:
+                said, actions = parse_structured(full)
+            else:
+                said, actions = strip_actions(full), parse_actions(full)
             if said:
                 self.bridge.message.emit("assistant", said)
-            actions = parse_actions(full)
             if not actions or self.cancel.is_set():
                 break
             sig = json.dumps(actions, sort_keys=True, ensure_ascii=False)
@@ -381,6 +483,7 @@ class Assistant:
             last_sig = sig
             self.speaker.wait_done()
             self._state("acting")
+            before = screen.LAST.get("thumb")
             results, need_shot = [], False
             for a in actions[:4]:
                 if self.cancel.is_set():
@@ -393,9 +496,15 @@ class Assistant:
                 results.append(f"{a.get('tool')}: {self.tools.run(a)}")
                 need_shot |= a.get("tool") in SCREEN_TOOLS
             msg = ("Tool results:\n" + "\n".join(results) +
-                   "\nIf the user's request is now done, reply with ONE short spoken sentence and NO action tag. "
+                   "\nIf the user's request is now done, reply with ONE short spoken sentence and no action. "
                    "Never repeat an action that already succeeded.")
             um = self._user_msg(msg, need_shot or self.cfg.get("watch_screen", True))
+            if need_shot and screen.screen_changed(before, screen.LAST.get("thumb")) is False:
+                note = "\n[The screen did not change after your action. It may not have worked; try a different way.]"
+                if isinstance(um["content"], list):
+                    um["content"][0]["text"] += note
+                else:
+                    um["content"] += note
             if self.tools.extra_image:
                 b64z, (zw, zh) = self.tools.extra_image
                 self.tools.extra_image = None

@@ -13,7 +13,7 @@ import zipfile
 
 import requests
 
-from ..paths import sub
+from ..paths import brain_info, sub
 from .download import download, hf_files, hf_url
 
 log = logging.getLogger("trilion.llama")
@@ -60,13 +60,62 @@ def exists(url):
         return False
 
 
+def strip_think(deltas):
+    """Remove <think>...</think> blocks from a token stream (Qwen3.5 may emit them even when told not to)."""
+    OPEN, CLOSE = "<think>", "</think>"
+    buf, inside = "", False
+    for d in deltas:
+        buf += d
+        while True:
+            if not inside:
+                i = buf.find(OPEN)
+                if i >= 0:
+                    if buf[:i]:
+                        yield buf[:i]
+                    buf, inside = buf[i + len(OPEN):], True
+                    continue
+                hold = next((k for k in range(min(len(OPEN) - 1, len(buf)), 0, -1) if OPEN.startswith(buf[-k:])), 0)
+                if len(buf) > hold:
+                    yield buf[:len(buf) - hold]
+                    buf = buf[len(buf) - hold:]
+                break
+            j = buf.find(CLOSE)
+            if j >= 0:
+                buf, inside = buf[j + len(CLOSE):], False
+                continue
+            hold = next((k for k in range(min(len(CLOSE) - 1, len(buf)), 0, -1) if CLOSE.startswith(buf[-k:])), 0)
+            buf = buf[len(buf) - hold:] if hold else ""
+            break
+    if buf and not inside:
+        yield buf
+
+
+def pick_files(names, quant, mm_pref):
+    """Choose (model, projector) from a list of file names."""
+    ggufs = [f for f in names if f.lower().endswith(".gguf")]
+    mm = [f for f in ggufs if "mmproj" in f.lower()]
+    models = [f for f in ggufs if "mmproj" not in f.lower() and quant.lower() in f.lower()
+              and not re.search(r"-\d{5}-of-\d{5}", f)]
+    models.sort(key=lambda f: ("ud-" in f.lower(), len(f)))  # plain quant before "UD-...XL" variants
+    mm.sort(key=lambda f: (next((i for i, p in enumerate(mm_pref) if re.search(p, f.lower())), 9), len(f)))
+    return (models[0] if models else None), (mm[0] if mm else None)
+
+
+OOM_WORDS = ("out of memory", "cudamalloc", "failed to allocate", "outofdevicememory", "cuda error")
+ARG_WORDS = ("invalid argument", "unknown argument", "unrecognized", "error: unknown", "invalid value")
+
+
 class LlamaServer:
     def __init__(self, cfg):
         self.cfg = cfg
+        self.brain = brain_info(cfg)
         self.proc = None
         self.port = None
         self.bin_dir = sub("llama")
-        self.model_dir = sub("models", "llm")
+        self.model_dir = sub("models", "llm") if self.brain["legacy_dir"] else sub("models", "llm", self.brain["key"])
+        self.structured_ok = True
+        self.variant = 0      # 0 = all flags, 1 = without optional flags, 2 = also low memory
+        self.restarts = 0
 
     # ---------- files ----------
     def find_exe(self):
@@ -103,31 +152,25 @@ class LlamaServer:
         prog(1, "Engine ready")
 
     def _local_model(self):
-        quant = self.cfg["llm_quant"].lower()
-        ggufs = [p for p in self.model_dir.glob("*.gguf")]
-        model = [p for p in ggufs if "mmproj" not in p.name.lower() and quant in p.name.lower()]
-        mm = [p for p in ggufs if "mmproj" in p.name.lower()]
+        names = {p.name: p for p in self.model_dir.glob("*.gguf")}
+        model, mm = pick_files(list(names), self.brain["quant"], self.brain["mm_pref"])
         if model and mm:
-            mm.sort(key=lambda p: ("q8" not in p.name.lower(), "f16" not in p.name.lower()))
-            return model[0], mm[0]
+            return names[model], names[mm]
         return None
 
     def ensure_model(self, prog):
         if self._local_model():
             prog(1, "Brain model ready")
             return
-        repo, quant = self.cfg["llm_repo"], self.cfg["llm_quant"]
-        prog(0, "Looking up brain model…")
-        files = [f for f in hf_files(repo) if f.endswith(".gguf")]
-        model = [f for f in files if "mmproj" not in f.lower() and quant.lower() in f.lower()]
-        mm = [f for f in files if "mmproj" in f.lower()]
+        repo, quant = self.brain["repo"], self.brain["quant"]
+        prog(0, f"Looking up brain model ({self.brain['key']})…")
+        model, mm = pick_files(hf_files(repo), quant, self.brain["mm_pref"])
         if not model or not mm:
-            raise RuntimeError(f"{repo} has no {quant} model + mmproj pair")
-        mm.sort(key=lambda f: ("q8" not in f.lower(), "f16" not in f.lower()))
-        download(hf_url(repo, model[0]), self.model_dir / os.path.basename(model[0]),
-                 lambda d, t: prog(0.86 * d / max(t, 1), f"Downloading brain model… {d / 1e9:.1f} / {t / 1e9:.1f} GB"))
-        download(hf_url(repo, mm[0]), self.model_dir / os.path.basename(mm[0]),
-                 lambda d, t: prog(0.86 + 0.14 * d / max(t, 1), "Downloading vision module…"))
+            raise RuntimeError(f"{repo} has no {quant} model + projector pair")
+        download(hf_url(repo, model), self.model_dir / os.path.basename(model),
+                 lambda d, t: prog(0.89 * d / max(t, 1), f"Downloading brain model… {d / 1e9:.1f} / {t / 1e9:.1f} GB"))
+        download(hf_url(repo, mm), self.model_dir / os.path.basename(mm),
+                 lambda d, t: prog(0.89 + 0.11 * d / max(t, 1), "Downloading vision module…"))
         prog(1, "Brain model ready")
 
     # ---------- process ----------
@@ -142,31 +185,65 @@ class LlamaServer:
             except Exception:
                 pass
 
+    def build_cmd(self, exe, gguf, mm, port):
+        ctx = int(self.cfg["context"])
+        cmd = [str(exe), "-m", str(gguf), "--mmproj", str(mm), "--host", "127.0.0.1", "--port", str(port),
+               "-ngl", str(self.cfg["gpu_layers"]), "--alias", "trilion"]
+        if self.variant >= 2:
+            ctx = min(ctx, 6144)
+            cmd += ["--no-mmproj-offload"]
+        cmd += ["-c", str(ctx)]
+        if self.variant == 0:  # optional flags: dropped automatically if this llama.cpp build rejects them
+            if self.brain["family"].startswith("qwen3"):
+                cmd += ["--chat-template-kwargs", '{"enable_thinking":false}', "--reasoning-budget", "0"]
+            else:
+                cmd += ["--image-min-tokens", "1024"]
+        return cmd
+
     def start(self):
         self._kill_stale()
         exe = self.find_exe()
         gguf, mm = self._local_model()
         self.port = _free_port()
-        cmd = [str(exe), "-m", str(gguf), "--mmproj", str(mm), "--host", "127.0.0.1",
-               "--port", str(self.port), "-ngl", str(self.cfg["gpu_layers"]),
-               "-c", str(self.cfg["context"]), "--alias", "trilion",
-               "--image-min-tokens", "1024"]
-        logf = open(sub("logs") / "llama-server.log", "wb")
+        cmd = self.build_cmd(exe, gguf, mm, self.port)
+        logf = open(sub("logs") / "llama-server.log", "ab")
+        logf.write(f"\n===== start variant {self.variant}: {' '.join(cmd)}\n".encode())
+        logf.flush()
         self.proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
                                      cwd=str(exe.parent), creationflags=NO_WINDOW)
         (sub("run") / "llama.pid").write_text(str(self.proc.pid))
-        log.info("llama-server pid %s on port %s", self.proc.pid, self.port)
+        log.info("llama-server pid %s on port %s (variant %s)", self.proc.pid, self.port, self.variant)
+
+    def _log_tail(self, n=1500):
+        try:
+            return (sub("logs") / "llama-server.log").read_text(errors="ignore")[-n:]
+        except Exception:
+            return ""
+
+    def _recover(self):
+        """The engine died while loading: pick the next, safer launch variant (max 2 restarts)."""
+        tail = self._log_tail().lower()
+        if self.restarts >= 2:
+            return False
+        if any(w in tail for w in OOM_WORDS) and self.variant < 2:
+            self.variant = 2
+        elif self.variant == 0:
+            self.variant = 1
+        else:
+            return False
+        self.restarts += 1
+        log.warning("engine exited while loading; retrying with variant %s", self.variant)
+        self.start()
+        return True
 
     def wait_ready(self, prog, timeout=300):
         t0 = time.time()
         while time.time() - t0 < timeout:
             if self.proc.poll() is not None:
-                tail = ""
-                try:
-                    tail = (sub("logs") / "llama-server.log").read_text(errors="ignore")[-1200:]
-                except Exception:
-                    pass
-                raise RuntimeError("The AI engine stopped while loading.\n" + tail)
+                if self._recover():
+                    t0 = time.time()
+                    continue
+                raise RuntimeError("The AI engine stopped while loading.\n" + self._log_tail(1200))
             try:
                 if requests.get(f"http://127.0.0.1:{self.port}/health", timeout=1).status_code == 200:
                     self._check_vision()
@@ -175,7 +252,7 @@ class LlamaServer:
             except requests.RequestException:
                 pass
             el = time.time() - t0
-            prog(min(0.95, el / 25), "Loading brain onto the GPU…")
+            prog(min(0.95, el / 25), "Loading brain onto the GPU…" if self.variant < 2 else "Loading brain (low-memory mode)…")
             time.sleep(0.4)
         raise RuntimeError("Timed out waiting for the AI engine")
 
@@ -185,7 +262,7 @@ class LlamaServer:
             mods = props.get("modalities")
             if mods is not None and not mods.get("vision", False):
                 raise RuntimeError("The vision module did not load, so Trilion cannot see the screen. "
-                                   "Delete %LOCALAPPDATA%\\Trilion\\models\\llm and relaunch.")
+                                   "Delete the brain folder in %LOCALAPPDATA%\\Trilion\\models\\llm and relaunch.")
         except requests.RequestException:
             pass
 
@@ -198,9 +275,28 @@ class LlamaServer:
                 self.proc.kill()
 
     # ---------- chat ----------
-    def chat_stream(self, messages, cancel=None, max_tokens=450, temperature=0.3):
+    def chat_stream(self, messages, cancel=None, max_tokens=450, temperature=None, schema=None):
+        smp = self.brain["sampling"]
         body = {"model": "trilion", "messages": messages, "stream": True, "max_tokens": max_tokens,
-                "temperature": temperature, "top_p": 0.9, "cache_prompt": True}
+                "temperature": smp["temperature"] if temperature is None else temperature,
+                "top_p": smp["top_p"], "top_k": smp["top_k"], "cache_prompt": True}
+        if self.brain["family"].startswith("qwen3"):
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+        use_schema = schema is not None and self.structured_ok
+        if use_schema:
+            body["response_format"] = {"type": "json_schema",
+                                       "json_schema": {"name": "reply", "strict": True, "schema": schema}}
+        try:
+            yield from strip_think(self._stream(body, cancel))
+        except requests.HTTPError as e:
+            if not use_schema:
+                raise
+            log.warning("structured output rejected (%s); falling back to free text", e)
+            self.structured_ok = False
+            body.pop("response_format", None)
+            yield from strip_think(self._stream(body, cancel))
+
+    def _stream(self, body, cancel):
         with requests.post(f"http://127.0.0.1:{self.port}/v1/chat/completions", json=body,
                            stream=True, timeout=(5, 300)) as r:
             r.raise_for_status()

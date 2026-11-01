@@ -1,6 +1,7 @@
 """Everything Trilion can do on the PC. Risky tools ask for confirmation first."""
 import contextlib
 import ctypes
+import inspect
 import io
 import logging
 import os
@@ -22,7 +23,7 @@ SEEING
 look {}                                   - fresh screenshot
 zoom {"x":100,"y":200,"w":400,"h":200}    - read small text: native-resolution close-up of a region (screenshot coords)
 list_windows {}                           - titles of open windows
-ui_list {"window":"<window title>"}              - list buttons/fields/menus BY NAME in a window (window optional = front window)
+ui_list {"window":"<window title>"}              - numbered list of buttons/fields/menus in a window ([id] Type: name); window optional = front window
 APPS & WINDOWS
 open_app {"name":"<app name>"}               - launch an app, file, folder or shortcut by name/path
 play_youtube {"query":"<search words>"}     - find a YouTube video by search words and open the top result (then look to confirm it is right)
@@ -30,8 +31,8 @@ open_search {"site":"youtube","query":"<search words>"} - open a site's search p
 open_url {"url":"https://..."}            - open a link (only links you found with web_search/open_search/fetch_url, or the user gave you)
 focus_window {"title":"<window title>"}           - bring a window to the front (title substring)
 MOUSE & KEYBOARD
-ui_click {"name":"<control name>","window":"<window title>","double":false} - click a control BY NAME (best choice; no pixel guessing)
-ui_type {"name":"<field name>","text":"<text>","enter":false}      - click a text field by name and type
+ui_click {"id":12}  or  {"name":"<control name>","window":"<window title>"} - click a control from the last ui_list (best choice; no pixel guessing)
+ui_type {"id":12,"text":"<text>","enter":false}  - click a text field from the last ui_list and type
 click {"x":100,"y":200,"button":"left","double":false} - click at screenshot pixel coords (fallback)
 drag {"x1":10,"y1":10,"x2":300,"y2":200}  - drag with the mouse
 move {"x":100,"y":200}   scroll {"amount":-5} (negative = down)
@@ -68,6 +69,11 @@ SEARCH_SITES = {
     "github": "https://github.com/search?q={q}",
     "amazon": "https://www.amazon.com/s?k={q}",
 }
+CRITICAL_RE = re.compile(
+    r"\b(delete|remove|erase|format|uninstall|empty (the )?recycle|send|submit|post|publish|pay|buy|purchase|"
+    r"checkout|place order|confirm (payment|order|purchase)|transfer|withdraw|sign out|log out|logout|"
+    r"shut ?down|restart|factory reset)\b", re.I)
+CRITICAL_KEYS = {"alt+f4", "shift+delete", "ctrl+shift+delete", "delete"}
 URL_RE = re.compile(r"https?://[^\s\"'<>)\]]+")
 INTERACTIVE = {"ButtonControl", "EditControl", "MenuItemControl", "ListItemControl", "TabItemControl",
                "CheckBoxControl", "RadioButtonControl", "HyperlinkControl", "ComboBoxControl",
@@ -81,6 +87,7 @@ class Tools:
         self.skills, self.memory, self.cancelled = skills, memory, cancelled
         self.extra_image = None  # (b64, (w,h)) a tool wants shown to the model
         self.known_urls = set()  # links the model may open: user-given or found via search
+        self._ui_map = {}        # id -> (x, y, name, type) from the last ui_list
 
     def note_text(self, text):
         for u in URL_RE.findall(text or ""):
@@ -92,6 +99,9 @@ class Tools:
         fn = getattr(self, "t_" + name, None)
         if not fn:
             return f"Unknown tool '{name}'."
+        reason = self.critical_reason(name, args) if self.cfg.get("confirm_critical", True) else None
+        if reason and not self.confirm(f"Trilion is about to {reason}. Allow?"):
+            return "The user declined this action."
         if name in RISKY and self.cfg.get("confirm_risky", True):
             if not self.confirm(f"Trilion wants to run: {name} {str(args)[:300]}"):
                 return "The user declined this action."
@@ -102,6 +112,38 @@ class Tools:
         except Exception as e:
             log.exception("tool %s failed", name)
             return f"{name} failed: {e}"
+
+    def critical_reason(self, name, args):
+        """Irreversible-looking actions (delete / pay / send ...) always ask first, even if 'Confirm risky' is off."""
+        try:
+            label = None
+            if name == "ui_click":
+                if args.get("id") is not None and str(args["id"]).lstrip("-").isdigit():
+                    item = self._ui_map.get(int(args["id"]))
+                    label = item[2] if item else None
+                label = label or args.get("name")
+            elif name == "click":
+                label = self._name_at(args.get("x"), args.get("y"))
+            elif name == "press_keys":
+                keys = str(args.get("keys", "")).replace(" ", "").lower()
+                return f"press {keys}" if keys in CRITICAL_KEYS else None
+            if label and CRITICAL_RE.search(label):
+                return f"click '{label[:50]}'"
+        except Exception:
+            pass
+        return None
+
+    def _name_at(self, x, y):
+        """Best-effort: name of the control under a screenshot point (UI Automation)."""
+        if x is None or y is None:
+            return None
+        try:
+            import uiautomation as auto
+            sx, sy = screen.to_screen(x, y)
+            c = auto.ControlFromPoint(sx, sy)
+            return (c.Name or "").strip() if c else None
+        except Exception:
+            return None
 
     def _gui(self):
         import pyautogui
@@ -381,14 +423,17 @@ class Tools:
             auto, root = self._uia_root(window)
         except ImportError:
             return "UI Automation is not available; use the screenshot instead."
-        out, seen = [], set()
-        for _c, name, typ, _pos in self._uia_walk(auto, root):
+        out, seen, self._ui_map = [], set(), {}
+        for _c, name, typ, pos in self._uia_walk(auto, root):
             if typ in INTERACTIVE and (typ, name) not in seen:
                 seen.add((typ, name))
-                out.append(f"{typ.replace('Control', '')}: {name[:60]}")
+                n = len(out) + 1
+                self._ui_map[n] = (pos[0], pos[1], name, typ)
+                out.append(f"[{n}] {typ.replace('Control', '')}: {name[:60]}")
             if len(out) >= 70:
                 break
-        return f"Window '{root.Name}':\n" + ("\n".join(out) or "(no named controls; use the screenshot)")
+        head = f"Window '{root.Name}'. Use the [id] with ui_click / ui_type:\n"
+        return head + ("\n".join(out) or "(no named controls; use the screenshot)")
 
     def _uia_find(self, name, window=None):
         auto, root = self._uia_root(window)
@@ -403,21 +448,32 @@ class Tools:
                 if score >= 6:
                     break
         if not best:
-            raise RuntimeError(f"No control named '{name}'. Try ui_list or use the screenshot.")
+            raise RuntimeError(f"No control named '{name}'. Run ui_list or use the screenshot.")
         return best
 
-    def t_ui_click(self, name, window=None, double=False):
+    def _ui_target(self, id=None, name=None, window=None):
+        if id is not None:
+            item = self._ui_map.get(int(id))
+            if not item:
+                raise RuntimeError(f"No control with id {id}. Run ui_list first.")
+            return item[2], item[3], (item[0], item[1])
+        if not name:
+            raise RuntimeError("Give an id from ui_list, or a control name.")
+        _s, nm, typ, pos = self._uia_find(name, window)
+        return nm, typ, pos
+
+    def t_ui_click(self, id=None, name=None, window=None, double=False):
         try:
-            _s, nm, typ, (x, y) = self._uia_find(name, window)
+            nm, typ, (x, y) = self._ui_target(id, name, window)
         except ImportError:
             return "UI Automation is not available; use click with screenshot coordinates."
         self._gui().click(x, y, clicks=2 if double else 1)
         time.sleep(0.5)
         return f"Clicked {typ.replace('Control', '')} '{nm[:50]}'."
 
-    def t_ui_type(self, name, text, window=None, enter=False):
+    def t_ui_type(self, text, id=None, name=None, window=None, enter=False):
         try:
-            _s, nm, typ, (x, y) = self._uia_find(name, window)
+            nm, typ, (x, y) = self._ui_target(id, name, window)
         except ImportError:
             return "UI Automation is not available; click the field, then use type_text."
         self._gui().click(x, y)
@@ -466,3 +522,47 @@ class Tools:
 
     def t_forget(self, fact):
         return self.memory.forget(fact)
+
+
+# ---------------------------------------------------------------------------
+# Strict reply format: {"say": "...", "action": null | {"tool": ..., "args": {...}}}
+# The schema is built from the tool method signatures, so it can never drift from the code.
+_NUM = {"x", "y", "w", "h", "x1", "y1", "x2", "y2", "amount", "seconds"}
+_INT = {"id"}
+_BOOL = {"double", "enter"}
+
+
+LEGACY_TOOLS = {"search_site"}   # still works if called, but the model is not offered it (open_search replaces it)
+
+
+def tool_specs():
+    specs = {}
+    for attr in dir(Tools):
+        if not attr.startswith("t_") or attr[2:] in LEGACY_TOOLS:
+            continue
+        props, req = {}, []
+        for p in inspect.signature(getattr(Tools, attr)).parameters.values():
+            if p.name == "self" or p.name.startswith("_"):
+                continue
+            typ = ("integer" if p.name in _INT else "number" if p.name in _NUM
+                   else "boolean" if p.name in _BOOL or isinstance(p.default, bool) else "string")
+            props[p.name] = {"type": typ}
+            if p.default is inspect.Parameter.empty:
+                req.append(p.name)
+        specs[attr[2:]] = (props, req)
+    return specs
+
+
+def reply_schema():
+    variants = []
+    for name, (props, req) in sorted(tool_specs().items()):
+        variants.append({
+            "type": "object",
+            "properties": {"tool": {"const": name},
+                           "args": {"type": "object", "properties": props, "required": req,
+                                    "additionalProperties": False}},
+            "required": ["tool", "args"], "additionalProperties": False})
+    return {"type": "object",
+            "properties": {"say": {"type": "string"},
+                           "action": {"anyOf": [{"type": "null"}, {"oneOf": variants}]}},
+            "required": ["say", "action"], "additionalProperties": False}

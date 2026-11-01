@@ -9,8 +9,8 @@ from .paths import Config
 log = logging.getLogger("trilion.boot")
 
 # (key, weight). Weights roughly track real time on a first run.
-STEPS = [("engine", 12), ("brain", 38), ("voice_dl", 6), ("ears_dl", 6), ("start", 2),
-         ("engines", 10), ("wait", 26)]
+STEPS = [("engine", 10), ("brain", 46), ("voice_dl", 5), ("ears_dl", 5), ("start", 2),
+         ("engines", 9), ("wait", 20), ("calibrate", 3)]
 TOTAL = sum(w for _, w in STEPS)
 
 
@@ -38,6 +38,27 @@ class Boot(QThread):
         def cb(frac, text):
             self.progress.emit((before + weight * max(0.0, min(1.0, frac))) / TOTAL, text)
         return cb
+
+    def _calibrate(self, rt, cfg):
+        """Learn once per brain how it writes click coordinates; never block startup on it."""
+        from .core import screen
+        brain = rt.llm.brain
+        cb = self._cb("calibrate")
+        mode = cfg.get("coord_mode") if cfg.get("coord_checked") == brain["key"] else None
+        if not mode:
+            cb(0.1, "Calibrating screen coordinates…")
+            try:
+                from .core.calibrate import calibrate
+                mode = calibrate(rt.llm)
+            except Exception as e:
+                log.warning("calibration failed: %s", e)
+                mode = None
+            mode = mode or brain["coords"]  # fall back to the model family's documented default
+            cfg["coord_mode"], cfg["coord_checked"] = mode, brain["key"]
+            cfg.save()
+        screen.COORD["mode"] = mode
+        log.info("coordinate mode: %s", mode)
+        cb(1, "Ready")
 
     def run(self):
         try:
@@ -75,6 +96,7 @@ class Boot(QThread):
             rt.listener.device = cfg.get("mic_device")
             e(1, "Senses online")
             rt.llm.wait_ready(self._cb("wait"))
+            self._calibrate(rt, cfg)
             try:
                 rt.listener.start()
             except Exception as mic_err:  # never block startup because of the microphone

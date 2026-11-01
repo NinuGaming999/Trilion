@@ -139,12 +139,15 @@ class MainWindow(QWidget):
         act_tray = QAction("Close button hides to tray", menu, checkable=True)
         act_tray.setChecked(bool(self.rt.cfg.get("close_to_tray", False)))
         act_tray.toggled.connect(lambda v: self._cfg("close_to_tray", v))
+        act_old = QAction("Use the lighter brain (Qwen2.5-VL 7B) - restart needed", menu, checkable=True)
+        act_old.setChecked(self.rt.cfg.get("brain") == "qwen2.5-vl-7b")
+        act_old.toggled.connect(lambda v: self._cfg("brain", "qwen2.5-vl-7b" if v else "qwen3.5-9b"))
         act_quit = QAction("Quit Trilion", menu)
         act_quit.triggered.connect(self._quit)
         for a in (act_show, act_talk, act_stop):
             menu.addAction(a)
         menu.addSeparator()
-        for a in (act_auto, act_tray):
+        for a in (act_auto, act_tray, act_old):
             menu.addAction(a)
         menu.addSeparator()
         menu.addAction(act_quit)

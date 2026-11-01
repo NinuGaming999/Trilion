@@ -124,7 +124,7 @@ class LoadingWindow(QWidget):
         else:
             p.setPen(QColor(120, 135, 175))
             p.setFont(QFont("Segoe UI", 9))
-            p.drawText(QRectF(0, 292, w, 20), Qt.AlignCenter, "First launch downloads the AI models once (~6 GB). Next starts are fast.")
+            p.drawText(QRectF(0, 292, w, 20), Qt.AlignCenter, "First launch downloads the AI models once (about 9 GB). Next starts are fast.")
         p.setPen(QPen(QColor(255, 255, 255, 35), 1))
         p.setBrush(Qt.NoBrush)
         p.drawRect(0, 0, w - 1, h - 1)

@@ -7,13 +7,22 @@ Everything runs on your own machine (tuned for an RTX 3060 12 GB). No cloud, no 
 Go to the **[Releases](../../releases/latest)** page and download **`Trilion-Setup.exe`**. Run it, then start Trilion from the desktop shortcut.
 (`Trilion-portable.zip` is the same app without an installer.)
 
-On the **first launch** Trilion downloads the engine and models (~6 GB) once into `%LOCALAPPDATA%\Trilion`
+On the **first launch** Trilion downloads the engine and models (about 9 GB) once into `%LOCALAPPDATA%\Trilion`
 with a progress bar. Later launches only load the models into memory.
+
+## The brain (v0.4)
+Trilion now runs **Qwen3.5 9B** (Q6_K, vision built in) through llama.cpp, with "thinking" switched off for speed.
+Replies are forced into a strict `{say, action}` JSON format by a grammar, so a command can never be malformed or read aloud.
+On first launch it also runs a quick self-test to learn how the model writes click coordinates.
+If the engine rejects a flag or runs out of VRAM, Trilion retries automatically with safer settings; if strict mode is rejected it falls back to plain text.
+The older **Qwen2.5-VL 7B** brain is still available: tray menu -> *Use the lighter brain* (restart needed), or set `"brain": "qwen2.5-vl-7b"` in `config.json`.
+If Q6_K is too big for your GPU, set `"llm_quant_override": "Q4_K_M"`.
 
 ## What it can do
 - **See:** screenshots of your screen (its own window is hidden from them) plus a `zoom` tool for small text.
 - **Hear / speak:** local Whisper + Kokoro. Just talk, or click **Talk** (click, speak, click again).
-- **Operate apps by name:** Windows UI Automation lets it click buttons and type into fields by their names, with screenshot clicking as the fallback.
+- **Operate apps by number:** `ui_list` numbers the buttons, menus and fields in a window; Trilion picks an id with `ui_click` / `ui_type` (Windows UI Automation). Screenshot clicking is the fallback, and it is told when the screen did not change after an action.
+- **Safety:** clicks on things like Delete, Send, Pay or Buy (and Alt+F4) always ask first, even if *Confirm risky* is off (`"confirm_critical": false` to disable).
 - **Web:** search and read pages; it never guesses links, only opens ones it found.
 - **Files and system:** files, PowerShell/cmd, Python (risky actions ask first).
 - **Skills:** folders with a `SKILL.md` in `%LOCALAPPDATA%\Trilion\skills\`. Trilion loads one when your request matches it. Built in: play-media, research-topic, organize-folder, system-check, take-notes, daily-briefing, operate-app, learn-skill. Say *"Trilion, learn how to do this"* to have it write a new skill, or add your own folder (optionally with `.ps1` / `.py` scripts it can run).

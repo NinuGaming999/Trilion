@@ -7,26 +7,53 @@ from pathlib import Path
 
 from . import APP_NAME
 
+# Selectable brains (vision-language models served by llama.cpp). Files live in their own folder per brain.
+BRAINS = {
+    "qwen3.5-9b": dict(
+        repo="unsloth/Qwen3.5-9B-GGUF", quant="Q6_K", family="qwen3.5", coords="norm1000",
+        mm_pref=(r"(?<!b)f16", r"bf16", r"q8"), legacy_dir=False,
+        sampling=dict(temperature=0.6, top_p=0.8, top_k=20), label="Qwen3.5 9B (recommended)"),
+    "qwen2.5-vl-7b": dict(
+        repo="ggml-org/Qwen2.5-VL-7B-Instruct-GGUF", quant="Q4_K_M", family="qwen2.5-vl", coords="pixel",
+        mm_pref=(r"q8", r"(?<!b)f16", r"bf16"), legacy_dir=True,
+        sampling=dict(temperature=0.3, top_p=0.9, top_k=40), label="Qwen2.5-VL 7B (lighter, older)"),
+}
+DEFAULT_BRAIN = "qwen3.5-9b"
+
 DEFAULTS = {
-    # Brain: any vision-capable GGUF repo on Hugging Face that llama.cpp supports.
-    "llm_repo": "ggml-org/Qwen2.5-VL-7B-Instruct-GGUF",
-    "llm_quant": "Q4_K_M",
+    "brain": DEFAULT_BRAIN,
+    "llm_quant_override": None,   # e.g. "Q4_K_M" if Q6_K does not fit your GPU
     "context": 12288,
     "gpu_layers": 99,
+    "structured": True,           # force replies into a strict {say, action} JSON (falls back automatically)
+    "coord_mode": None,           # pixel | norm1000 | unit; measured at first launch of each brain
+    "coord_checked": None,
     # Ears (runs on CPU so the GPU stays free for the brain)
     "whisper_repo": "Systran/faster-whisper-small",
-    "whisper_language": "en",  # None = auto-detect (less reliable on short phrases)
+    "whisper_language": "en",     # None = auto-detect (less reliable on short phrases)
     # Voice
     "voice": "af_heart",
     # Behaviour
     "wake_word": False,       # if on: say "Trilion ..." (stays awake 45 s after each reply)
     "mic_device": None,       # input device name; None = Windows default
-    "config_version": 2,
     "watch_screen": True,     # attach a fresh screenshot to every request
     "confirm_risky": True,    # ask before shell commands / writing files
+    "confirm_critical": True, # ALWAYS ask before clicking Delete / Pay / Send / Buy ... (independent of the above)
     "max_steps": 8,
     "screen_max_width": 1280,
+    "config_version": 3,
 }
+
+
+def brain_info(cfg):
+    key = cfg.get("brain") or DEFAULT_BRAIN
+    if key not in BRAINS:
+        key = DEFAULT_BRAIN
+    b = dict(BRAINS[key])
+    b["key"] = key
+    if cfg.get("llm_quant_override"):
+        b["quant"] = cfg["llm_quant_override"]
+    return b
 
 
 def app_dir() -> Path:
@@ -53,6 +80,10 @@ class Config(dict):
                 if saved.get("config_version", 1) < 2:  # v0.1 defaults were too strict
                     self.update(wake_word=False, whisper_language="en", context=12288,
                                 screen_max_width=1280, config_version=2)
+                if saved.get("config_version", 1) < 3:  # v0.4: new default brain
+                    self.pop("llm_repo", None)
+                    self.pop("llm_quant", None)
+                    self.update(brain=DEFAULT_BRAIN, coord_mode=None, coord_checked=None, config_version=3)
                     self.save()
             except Exception:
                 pass
