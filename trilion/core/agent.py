@@ -9,7 +9,7 @@ import time
 from . import screen
 from .memory import Memory
 from .skills import Skills
-from .tools import SCREEN_TOOLS, TOOL_DOCS, Tools, reply_schema
+from .tools import SCREEN_TOOLS, TOOL_DOCS, Tools, is_failure, reply_schema
 
 log = logging.getLogger("trilion.agent")
 
@@ -49,7 +49,8 @@ Rules:
 - The screenshot never shows your own window. If text is small or unclear, use zoom on that region before answering.
 - {COORDS}
 - Prefer open_app and keyboard shortcuts over clicking; they are more reliable.
-- Prefer ui_list, then ui_click / ui_type with an [id] from that list, over pixel clicks. Fall back to the screenshot if they fail.
+- In normal Windows apps, ui_list then ui_click / ui_type with an [id] from that list is most reliable. Never invent a control name.
+- Discord, browsers, Electron apps and games do not expose controls: there, click (or click_type for text boxes) using coordinates from the screenshot straight away. If a tool fails, do NOT repeat it: switch to a different method.
 - Check the new screenshot before claiming something worked. If a result says the screen did not change, your action probably failed: try another way or ask.
 - When a request matches a skill in your skills list, call use_skill FIRST and follow its steps.
 - When the user tells you a lasting fact or preference ("remember...", their name, city, habits), call remember.
@@ -470,13 +471,14 @@ class Assistant:
         self._state("thinking")
         self.history.append(self._user_msg(text, self.cfg.get("watch_screen", True)))
         last_sig, repeats, step = None, 0, 0
+        self.banned, fails = set(), {}
         while step < (int(self.cfg.get("game_max_steps", 60)) if self.tools.game_on else int(self.cfg.get("max_steps", 8))):
             step += 1
             if self.cancel.is_set():
                 break
             structured = self._structured()
             streamer, full, say = Streamer(self._speak), "", SayExtractor()
-            kw = {"schema": reply_schema()} if structured else {}
+            kw = {"schema": reply_schema(self.banned)} if structured else {}
             for delta in self.rt.llm.chat_stream(self._messages(), cancel=self.cancel, **kw):
                 full += delta
                 streamer.feed(say.feed(delta) if structured else delta)
@@ -508,9 +510,25 @@ class Assistant:
                 if a.get("tool") == "_bad":
                     results.append("Could not parse your action JSON; use valid JSON.")
                     continue
-                self.bridge.message.emit("action", f"{a.get('tool')} {json.dumps(a.get('args', {}), ensure_ascii=False)[:90]}")
-                results.append(f"{a.get('tool')}: {self.tools.run(a)}")
-                need_shot |= a.get("tool") in SCREEN_TOOLS
+                tool = a.get("tool")
+                self.bridge.message.emit("action", f"{tool} {json.dumps(a.get('args', {}), ensure_ascii=False)[:90]}")
+                if tool in self.banned:
+                    results.append(f"{tool}: Disabled for this task because it keeps failing. Use click or click_type "
+                                   "with coordinates from the screenshot instead.")
+                    continue
+                res = self.tools.run(a)
+                if is_failure(res):
+                    fails[tool] = fails.get(tool, 0) + 1
+                    ui_dead = "does not expose" in res or "not available" in res.lower()
+                    if tool in ("ui_list", "ui_click", "ui_type") and (ui_dead or fails[tool] >= 2):
+                        self.banned |= {"ui_list", "ui_click", "ui_type"}
+                    elif fails[tool] >= 2:
+                        self.banned.add(tool)
+                    res += " [That did not work. Do not repeat it; try a different method.]"
+                results.append(f"{tool}: {res}")
+                need_shot |= tool in SCREEN_TOOLS
+            if self.banned:
+                results.append("Tools now disabled for this task: " + ", ".join(sorted(self.banned)) + ".")
             msg = ("Tool results:\n" + "\n".join(results) +
                    "\nIf the user's request is now done, reply with ONE short spoken sentence and no action. "
                    "Never repeat an action that already succeeded.")

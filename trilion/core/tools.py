@@ -31,9 +31,10 @@ open_search {"site":"youtube","query":"<search words>"} - open a site's search p
 open_url {"url":"https://..."}            - open a link (only links you found with web_search/open_search/fetch_url, or the user gave you)
 focus_window {"title":"<window title>"}           - bring a window to the front (title substring)
 MOUSE & KEYBOARD
-ui_click {"id":12}  or  {"name":"<control name>","window":"<window title>"} - click a control from the last ui_list (best choice; no pixel guessing)
+ui_click {"id":12}  or  {"name":"<control name>","window":"<window title>"} - click a control from the last ui_list. Only works in apps that expose their controls (NOT Discord, browsers, Electron apps or games: use click there)
 ui_type {"id":12,"text":"<text>","enter":false}  - click a text field from the last ui_list and type
-click {"x":100,"y":200,"button":"left","double":false} - click at screenshot pixel coords (fallback)
+click {"x":100,"y":200,"button":"left","double":false} - click at the screenshot coordinates (works in every app)
+click_type {"x":100,"y":200,"text":"<text>","enter":false} - click a text box at those coordinates, then type into it (chat boxes, search bars)
 drag {"x1":10,"y1":10,"x2":300,"y2":200}  - drag with the mouse
 move {"x":100,"y":200}   scroll {"amount":-5} (negative = down)
 type_text {"text":"<text>","enter":false}  - type at the cursor
@@ -62,7 +63,7 @@ remember {"fact":"The user's city is Dhaka"}   forget {"fact":"city"}"""
 
 RISKY = {"run_shell", "write_file", "run_python", "run_skill_script"}
 SCREEN_TOOLS = {"game_act", "game_click", "game_mode", "open_app", "open_url", "open_search", "look", "click", "move", "scroll", "type_text",
-                "press_keys", "wait", "drag", "focus_window", "ui_click", "ui_type", "play_youtube", "search_site"}
+                "press_keys", "wait", "drag", "focus_window", "ui_click", "ui_type", "click_type", "play_youtube", "search_site"}
 
 SEARCH_SITES = {
     "youtube": "https://www.youtube.com/results?search_query={q}",
@@ -130,7 +131,7 @@ class Tools:
                     item = self._ui_map.get(int(args["id"]))
                     label = item[2] if item else None
                 label = label or args.get("name")
-            elif name == "click":
+            elif name in ("click", "click_type"):
                 label = self._name_at(args.get("x"), args.get("y"))
             elif name == "press_keys":
                 keys = str(args.get("keys", "")).replace(" ", "").lower()
@@ -294,6 +295,13 @@ class Tools:
         time.sleep(0.4)
         return f"Clicked ({x},{y})."
 
+    def t_click_type(self, x, y, text, enter=False):
+        """Click a text box at screenshot coordinates, then type: one step for chat boxes / search bars."""
+        self.t_click(x, y)
+        time.sleep(0.25)
+        self.t_type_text(text, enter=enter)
+        return f"Clicked ({x},{y}) and typed."
+
     def t_drag(self, x1, y1, x2, y2):
         g = self._gui()
         a, b = screen.to_screen(x1, y1), screen.to_screen(x2, y2)
@@ -441,7 +449,10 @@ class Tools:
             if len(out) >= 70:
                 break
         head = f"Window '{root.Name}'. Use the [id] with ui_click / ui_type:\n"
-        return head + ("\n".join(out) or "(no named controls; use the screenshot)")
+        if not out:
+            return (f"Window '{root.Name}' does not expose its buttons (normal for Discord, browsers, Electron apps and "
+                    "games). Use click or click_type with coordinates from the screenshot.")
+        return head + "\n".join(out)
 
     def _uia_find(self, name, window=None):
         auto, root = self._uia_root(window)
@@ -605,13 +616,26 @@ _INT = {"id"}
 _BOOL = {"double", "enter", "on", "keep"}
 
 
+_FAIL_START = ("no control", "no window", "unknown tool", "bad arguments", "bad input", "blocked", "game mode is off",
+               "ui automation is not available", "no skill", "unsupported")
+
+
+def is_failure(result):
+    """True when a tool result means the action did not work (but not when the user simply said no)."""
+    low = str(result).strip().lower()
+    if low.startswith("the user declined"):
+        return False
+    return (low.startswith(_FAIL_START) or " failed:" in low or "does not expose its buttons" in low
+            or "is not in front" in low)
+
+
 LEGACY_TOOLS = {"search_site"}   # still works if called, but the model is not offered it (open_search replaces it)
 
 
-def tool_specs():
+def tool_specs(exclude=()):
     specs = {}
     for attr in dir(Tools):
-        if not attr.startswith("t_") or attr[2:] in LEGACY_TOOLS:
+        if not attr.startswith("t_") or attr[2:] in LEGACY_TOOLS or attr[2:] in exclude:
             continue
         props, req = {}, []
         for p in inspect.signature(getattr(Tools, attr)).parameters.values():
@@ -626,9 +650,9 @@ def tool_specs():
     return specs
 
 
-def reply_schema():
+def reply_schema(exclude=()):
     variants = []
-    for name, (props, req) in sorted(tool_specs().items()):
+    for name, (props, req) in sorted(tool_specs(exclude).items()):
         variants.append({
             "type": "object",
             "properties": {"tool": {"const": name},
