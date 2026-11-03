@@ -21,7 +21,7 @@ jobs:
 
   build:
     needs: test
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -56,6 +56,32 @@ jobs:
           files: |
             dist/Trilion-Setup.exe
             dist/Trilion-portable.zip
+      - name: Publish Trilion v0.7.0 from main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.7.0
+          target_commitish: ${{ github.sha }}
+          name: Trilion v0.7.0
+          generate_release_notes: true
+          body: |
+            ## Trilion v0.7.0 — Command Center Edition
+
+            A complete command-center interface redesign inspired by the JARVIS dashboard.
+
+            - New dark command-center dashboard with live activity, system overview, agent modules, mission timeline, memory insights, and quick commands.
+            - New animated 3D wireframe neural core with orbital rings and nodes.
+            - Core animation reacts to live microphone input and voice output, and reflects listening, thinking, speaking, and acting states.
+            - NEURAL, FOCUS, and AURORA visual themes recolor the interface without changing assistant, model, or safety settings.
+            - Existing local AI, voice, vision, safety confirmations, tray, and keyboard controls remain connected.
+
+            **Install:** Download `Trilion-Setup.exe`, run it, and launch Trilion from the desktop shortcut.
+            **Portable:** Download `Trilion-portable.zip` and extract it to a folder of your choice.
+            First launch downloads the local AI and speech models.
+          files: |
+            dist/Trilion-Setup.exe
+            dist/Trilion-portable.zip
+          fail_on_unmatched_files: true
       - name: Keep a copy as an Actions artifact (manual runs only)
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
