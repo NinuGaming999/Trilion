@@ -59,6 +59,12 @@ def match(text):
     if re.fullmatch(r"(what('s| is) )?(the )?(today's |current )?date( today)?|what day is it( today)?", t):
         return f"Today is {datetime.now().strftime('%A, %B %d').replace(' 0', ' ')}.", None
 
+    if re.fullmatch(r"(?:play|start|run|launch) minecraft(?: for me)?|(?:minecraft|game) mode(?: on)?", t):
+        return ("Minecraft mode on. Keep a single-player world open in front.",
+                {"tool": "game_mode", "args": {"on": True, "window": "Minecraft", "profile": "minecraft"}})
+    if re.fullmatch(r"stop (?:playing|the game|minecraft|game mode)|(?:minecraft|game) mode off|exit game mode", t):
+        return "Game mode off.", {"tool": "game_mode", "args": {"on": False}}
+
     m = re.fullmatch(r"play (.+?)(?: on youtube)?", t)
     if m and "spotify" not in t and m.group(1) not in VAGUE:
         q = m.group(1)

@@ -238,12 +238,16 @@ class GameInput:
         return True
 
     # ---- the one call the model uses ----
-    def act(self, hold="", tap="", dx=0, dy=0, click="", scroll=0, ms=300, keep=False, stop=lambda: False):
-        """Hold keys for ms, tap keys, move the mouse, click, scroll - all timed locally."""
+    def act(self, hold="", tap="", dx=0, dy=0, click="", scroll=0, ms=300, keep=False, stop=lambda: False,
+            hold_click=""):
+        """Hold keys (and optionally a mouse button) for ms, tap keys, move the mouse, click, scroll - timed locally."""
         hold_keys, tap_keys = parse_keys(hold), parse_keys(tap)
         click = (click or "").lower().strip()
-        if click and click not in BUTTONS:
-            raise ValueError("click must be left, right or middle")
+        hold_btn = (hold_click or "").lower().strip()
+        if (click and click not in BUTTONS) or (hold_btn and hold_btn not in BUTTONS):
+            raise ValueError("click and hold_click must be left, right or middle")
+        if hold_btn and click == hold_btn:
+            click = ""
         ms = int(max(0, min(5000, ms if ms is not None else 300)))
         with self.lock:
             self.last_cmd = time.monotonic()
@@ -254,6 +258,11 @@ class GameInput:
             for k in hold_keys:
                 if k not in self.keys:
                     self._key(k, True)
+            for bn in list(self.buttons):             # same rule for mouse buttons
+                if bn != hold_btn:
+                    self._btn(bn, False)
+            if hold_btn and hold_btn not in self.buttons:
+                self._btn(hold_btn, True)
         t_start = time.perf_counter()
         ok = True
         try:
@@ -282,15 +291,24 @@ class GameInput:
             self.last_cmd = time.monotonic()
         return ok
 
-    def click_at(self, x, y, button="left", double=False):
+    def click_at(self, x, y, button="left", double=False, shift=False):
         if button not in BUTTONS:
             raise ValueError("button must be left, right or middle")
         with self.lock:
             self.last_cmd = time.monotonic()
-        self.b.move_abs(int(x), int(y))
-        time.sleep(0.06)
-        for _ in range(2 if double else 1):
-            self.b.button(button, True)
-            time.sleep(0.045)
-            self.b.button(button, False)
+        try:
+            if shift:                                  # shift-click (move a whole stack in menus)
+                with self.lock:
+                    self._key("shift", True)
+                time.sleep(0.03)
+            self.b.move_abs(int(x), int(y))
             time.sleep(0.06)
+            for _ in range(2 if double else 1):
+                self.b.button(button, True)
+                time.sleep(0.045)
+                self.b.button(button, False)
+                time.sleep(0.06)
+        finally:
+            if shift:
+                with self.lock:
+                    self._key("shift", False)

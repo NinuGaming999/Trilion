@@ -102,9 +102,11 @@ def test_schema_covers_every_tool_and_requires_the_right_args():
     assert len(variants) == len(specs) and all(v["properties"]["tool"]["const"] in specs for v in variants)
     assert sch["required"] == ["say", "action"]
     # every tool mentioned in the docs exists
+    from trilion.core.minecraft import MC_DOCS, MC_TOOLS
     from trilion.core.tools import TOOL_DOCS
     for name in specs:
-        assert name in TOOL_DOCS, f"{name} missing from TOOL_DOCS"
+        assert name in TOOL_DOCS or name in MC_DOCS, f"{name} missing from the tool docs"
+    assert MC_TOOLS <= set(specs) and all(n in MC_DOCS for n in MC_TOOLS)
 
 
 class Gui:

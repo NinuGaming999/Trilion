@@ -8,6 +8,7 @@ import time
 
 from . import screen
 from .memory import Memory
+from .minecraft import MC_DOCS, MC_RULES, MC_TOOLS
 from .skills import Skills
 from .tools import SCREEN_TOOLS, TOOL_DOCS, Tools, is_failure, reply_schema
 
@@ -414,7 +415,10 @@ class Assistant:
         extra = "\n\n".join(b for b in (self.skills.prompt_block(), self.memory.prompt_block()) if b)
         system = build_system(self._structured(), screen.COORD["mode"])
         if self.tools.game_on:
-            extra = (GAME_RULES.replace("{WINDOW}", self.tools.game_window or "the window in front") + "\n\n" + extra).strip()
+            game = GAME_RULES.replace("{WINDOW}", self.tools.game_window or "the window in front")
+            if self.tools.game_profile == "minecraft":
+                game += "\n\n" + MC_RULES + "\n\n" + MC_DOCS
+            extra = (game + "\n\n" + extra).strip()
         out = [{"role": "system", "content": system + ("\n" + extra if extra else "")}]
         for i, m in enumerate(self.history):
             c = m["content"]
@@ -478,7 +482,8 @@ class Assistant:
                 break
             structured = self._structured()
             streamer, full, say = Streamer(self._speak), "", SayExtractor()
-            kw = {"schema": reply_schema(self.banned)} if structured else {}
+            hidden = set(self.banned) | (set() if self.tools.game_profile == "minecraft" else MC_TOOLS)
+            kw = {"schema": reply_schema(hidden)} if structured else {}
             for delta in self.rt.llm.chat_stream(self._messages(), cancel=self.cancel, **kw):
                 full += delta
                 streamer.feed(say.feed(delta) if structured else delta)
@@ -494,7 +499,7 @@ class Assistant:
                 break
             sig = json.dumps(actions, sort_keys=True, ensure_ascii=False)
             repeats = repeats + 1 if sig == last_sig else 0
-            allowed = 6 if all(str(a.get("tool", "")).startswith("game_") for a in actions) else 1
+            allowed = 6 if all(str(a.get("tool", "")).startswith(("game_", "mc_")) for a in actions) else 1
             if repeats >= allowed:  # the model is looping on the same command: stop instead of repeating it
                 self._speak("I seem to be repeating myself, so I stopped.")
                 break

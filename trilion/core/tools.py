@@ -12,7 +12,7 @@ import webbrowser
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import screen
+from . import minecraft, screen
 
 log = logging.getLogger("trilion.tools")
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0
@@ -50,9 +50,9 @@ write_file {"path":"C:/a.txt","content":"..."}   - asks the user
 run_shell {"command":"..."}               - cmd/PowerShell (e.g. powershell -c "..."); asks the user
 run_python {"code":"print(2+2)"}          - run Python for calculations or data work; asks the user
 GAMES (real keyboard and mouse only; single-player games)
-game_mode {"on":true,"window":"<game window title>"} - start or stop game mode (asks the user once; stopping releases every key)
-game_act {"hold":"<keys, comma separated>","tap":"<keys>","dx":0,"dy":0,"click":"<left|right|middle>","scroll":0,"ms":500,"keep":false} - ONE timed action: keys in hold stay down for ms, then release; dx/dy move the mouse in counts (camera/aim); tap presses keys once. Keys: a-z 0-9 space enter esc tab shift ctrl alt up down left right f1-f12
-game_click {"x":0,"y":0,"button":"left","double":false} - click a spot in a menu (same coordinates as the screenshot)
+game_mode {"on":true,"window":"<game window title>","profile":"<minecraft or empty>"} - start or stop game mode (asks the user once; stopping releases every key). Use profile minecraft for Minecraft
+game_act {"hold":"<keys, comma separated>","tap":"<keys>","dx":0,"dy":0,"click":"<left|right|middle>","hold_click":"<left|right>","scroll":0,"ms":500,"keep":false} - ONE timed action: keys (and the hold_click mouse button) stay down for ms, then release; dx/dy move the mouse in counts (camera/aim); tap presses keys once; click taps a mouse button. Keys: a-z 0-9 space enter esc tab shift ctrl alt up down left right f1-f12
+game_click {"x":0,"y":0,"button":"left","double":false,"shift":false} - click a spot in a menu (same coordinates as the screenshot); shift=true shift-clicks
 game_release {} - let go of every key and mouse button
 SKILLS & MEMORY
 use_skill {"name":"play-media"}           - load a skill's step-by-step instructions
@@ -62,7 +62,7 @@ run_skill_script {"skill":"my-skill","script":"do.ps1","args":""} - run a script
 remember {"fact":"The user's city is Dhaka"}   forget {"fact":"city"}"""
 
 RISKY = {"run_shell", "write_file", "run_python", "run_skill_script"}
-SCREEN_TOOLS = {"game_act", "game_click", "game_mode", "open_app", "open_url", "open_search", "look", "click", "move", "scroll", "type_text",
+SCREEN_TOOLS = {"game_act", "game_click", "game_mode", *minecraft.MC_TOOLS, "open_app", "open_url", "open_search", "look", "click", "move", "scroll", "type_text",
                 "press_keys", "wait", "drag", "focus_window", "ui_click", "ui_type", "click_type", "play_youtube", "search_site"}
 
 SEARCH_SITES = {
@@ -96,6 +96,8 @@ class Tools:
         self._ui_map = {}        # id -> (x, y, name, type) from the last ui_list
         self.game = None         # GameInput while game mode is on
         self.game_window = ""    # title text of the game window that must be in front
+        self.game_profile = ""   # "minecraft" switches on the mc_* tools
+        self.game_exclude = ()   # window titles to skip (e.g. the Minecraft launcher)
         self.game_backend = None  # tests inject a recording backend here
 
     def note_text(self, text):
@@ -273,7 +275,9 @@ class Tools:
                 n = u.GetWindowTextLengthW(hwnd)
                 buf = ctypes.create_unicode_buffer(n + 1)
                 u.GetWindowTextW(hwnd, buf, n + 1)
-                if title.lower() in buf.value.lower():
+                low = buf.value.lower()
+                excl = self.game_exclude if (self.game and title.lower() == self.game_window.lower()) else ()
+                if title.lower() in low and not any(x in low for x in excl):
                     found.append(hwnd)
             return True
         u.EnumWindows(cb_t(cb), 0)
@@ -519,21 +523,47 @@ class Tools:
         u.GetWindowTextW(h, buf, n + 1)
         return buf.value
 
+    def _title_ok(self, title):
+        low = title.lower()
+        return self.game_window.lower() in low and not any(x in low for x in self.game_exclude)
+
     def _game_ready(self):
         if not self.game:
             raise RuntimeError("Game mode is off. Call game_mode first.")
-        if self.game_window and self.game_window.lower() not in self._foreground_title().lower():
+        if self.game_window and not self._title_ok(self._foreground_title()):
             self.t_focus_window(self.game_window)
-            if self.game_window.lower() not in self._foreground_title().lower():
+            if not self._title_ok(self._foreground_title()):
                 raise RuntimeError(f"The game window '{self.game_window}' is not in front, so nothing was sent.")
 
-    def t_game_mode(self, on=True, window=""):
+    def _game_rect(self):
+        """Client area of the window in front, in real screen pixels: (left, top, right, bottom)."""
+        if os.name != "nt":
+            return None
+        try:
+            from ctypes import wintypes
+            u = ctypes.windll.user32
+            h = u.GetForegroundWindow()
+            r, pt = wintypes.RECT(), wintypes.POINT(0, 0)
+            u.GetClientRect(h, ctypes.byref(r))
+            u.ClientToScreen(h, ctypes.byref(pt))
+            if r.right - r.left < 50:
+                return None
+            return pt.x, pt.y, pt.x + r.right, pt.y + r.bottom
+        except Exception:
+            return None
+
+    def t_game_mode(self, on=True, window="", profile=""):
         if not on:
             self.release_game()
-            self.game, self.game_window = None, ""
+            self.game, self.game_window, self.game_profile, self.game_exclude = None, "", "", ()
             return "Game mode off. All keys and buttons released."
+        profile = (profile or "").lower().strip()
+        if profile == "minecraft":
+            window = window or "Minecraft"
         if self.game:
             self.game_window = window or self.game_window
+            if profile:
+                self._set_profile(profile)
             return f"Game mode already on for '{self.game_window or 'any window'}'."
         if self.cfg.get("confirm_critical", True) and not self.confirm(
                 f"Let Trilion play '{window or 'the game in front'}' with your keyboard and mouse? "
@@ -543,27 +573,120 @@ class Tools:
         from .gameinput import GameInput, WinBackend
         backend = self.game_backend or WinBackend()
         self.game, self.game_window = GameInput(backend), window
+        self._set_profile(profile)
         if window:
             self.t_focus_window(window)
-        return f"Game mode on for '{window or 'the window in front'}'. Play with game_act, one short action at a time."
+        extra = " Minecraft tools (mc_aim, mc_mine, mc_walk ...) are now available." if self.game_profile == "minecraft" else ""
+        return f"Game mode on for '{window or 'the window in front'}'. Play one short action at a time.{extra}"
 
-    def t_game_act(self, hold="", tap="", dx=0, dy=0, click="", scroll=0, ms=300, keep=False):
+    def _set_profile(self, profile):
+        self.game_profile = profile if profile == "minecraft" else ""
+        self.game_exclude = ("launcher",) if self.game_profile == "minecraft" else ()
+
+    def t_game_act(self, hold="", tap="", dx=0, dy=0, click="", scroll=0, ms=300, keep=False, hold_click=""):
         self._game_ready()
         try:
-            done = self.game.act(hold, tap, dx, dy, click, scroll, ms, keep, stop=self.cancelled)
+            done = self.game.act(hold, tap, dx, dy, click, scroll, ms, keep, stop=self.cancelled, hold_click=hold_click)
         except ValueError as e:
             return f"Bad input: {e}"
         return "Done." if done else "Interrupted; everything released."
 
-    def t_game_click(self, x, y, button="left", double=False):
+    def t_game_click(self, x, y, button="left", double=False, shift=False):
         self._game_ready()
         sx, sy = screen.to_screen(x, y)
-        self.game.click_at(sx, sy, button, double)
+        self.game.click_at(sx, sy, button, double, shift)
         return f"Clicked ({x},{y})."
 
     def t_game_release(self):
         self.release_game()
         return "Everything released."
+
+    # ---- Minecraft (only offered while game_mode profile is minecraft) ----
+    def _mc(self):
+        if self.game_profile != "minecraft":
+            raise RuntimeError("Minecraft mode is off. Call game_mode with profile minecraft first.")
+        self._game_ready()
+
+    def _mc_act(self, **kw):
+        done = self.game.act(stop=self.cancelled, **kw)
+        return "Done." if done else "Interrupted; everything released."
+
+    def _mc_turn(self, yaw, pitch, label):
+        yaw, pitch = max(-360.0, min(360.0, float(yaw))), max(-90.0, min(90.0, float(pitch)))
+        dx, dy = minecraft.counts_for(yaw, pitch, self.cfg.get("mc_sensitivity", 100), self.cfg.get("mc_turn_scale", 1.0))
+        ms = int(max(120, min(700, 120 + (abs(dx) + abs(dy)) / 4)))
+        self._mc_act(dx=dx, dy=dy, ms=ms)
+        return f"{label}: turned yaw {yaw:.1f} deg, pitch {pitch:.1f} deg ({dx},{dy} counts)."
+
+    def t_mc_look(self, yaw=0, pitch=0):
+        self._mc()
+        return self._mc_turn(yaw, pitch, "Looked")
+
+    def t_mc_aim(self, x, y):
+        self._mc()
+        tx, ty = screen.to_screen(x, y)
+        rect = self._game_rect()
+        if rect:
+            cx, cy, h = (rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2, rect[3] - rect[1]
+        else:
+            sc = screen.LAST["scale"] or 1.0
+            cx = screen.LAST["left"] + screen.LAST["w"] / sc / 2
+            cy = screen.LAST["top"] + screen.LAST["h"] / sc / 2
+            h = screen.LAST["h"] / sc
+        yaw, pitch = minecraft.aim_degrees(tx, ty, cx, cy, h, self.cfg.get("mc_fov", 70))
+        return self._mc_turn(yaw, pitch, f"Aimed at ({x},{y})")
+
+    def t_mc_walk(self, dir="forward", ms=800, sprint=False, jump=False, sneak=False):
+        self._mc()
+        try:
+            keys = minecraft.walk_keys(dir, sprint, jump, sneak)
+        except ValueError as e:
+            return f"Bad input: {e}"
+        return self._mc_act(hold=",".join(keys), ms=max(100, min(3000, int(ms))))
+
+    def t_mc_mine(self, ms=1500):
+        self._mc()
+        return self._mc_act(hold_click="left", ms=max(200, min(5000, int(ms))))
+
+    def t_mc_attack(self, times=1):
+        self._mc()
+        for _ in range(max(1, min(8, int(times)))):
+            if self.cancelled():
+                break
+            self._mc_act(click="left", ms=650)       # 1.9+ combat: wait out the attack cooldown
+        return f"Attacked {int(times)} time(s)."
+
+    def t_mc_use(self, ms=0):
+        self._mc()
+        if int(ms) <= 0:
+            return self._mc_act(click="right", ms=150)
+        return self._mc_act(hold_click="right", ms=max(200, min(5000, int(ms))))
+
+    def t_mc_hotbar(self, slot=1):
+        self._mc()
+        if not 1 <= int(slot) <= 9:
+            return "Bad input: slot must be 1 to 9."
+        return self._mc_act(tap=str(int(slot)), ms=120)
+
+    def t_mc_inventory(self):
+        self._mc()
+        return self._mc_act(tap="e", ms=150)
+
+    def t_mc_close(self):
+        self._mc()
+        return self._mc_act(tap="esc", ms=150)
+
+    def t_mc_set_turn_scale(self, requested, actual):
+        """Calibration: the camera was asked to turn `requested` degrees but really turned `actual`."""
+        if not float(requested) or not float(actual):
+            return "Bad input: both numbers must be non-zero."
+        new = max(0.2, min(5.0, float(self.cfg.get("mc_turn_scale", 1.0)) * abs(float(actual)) / abs(float(requested))))
+        self.cfg["mc_turn_scale"] = round(new, 4)
+        try:
+            self.cfg.save()
+        except Exception:
+            pass
+        return f"Turn scale is now {new:.3f}."
 
     # ---- skills & memory ----
     def t_list_skills(self):
@@ -611,9 +734,10 @@ class Tools:
 # ---------------------------------------------------------------------------
 # Strict reply format: {"say": "...", "action": null | {"tool": ..., "args": {...}}}
 # The schema is built from the tool method signatures, so it can never drift from the code.
-_NUM = {"x", "y", "w", "h", "x1", "y1", "x2", "y2", "amount", "seconds", "dx", "dy", "ms", "scroll"}
-_INT = {"id"}
-_BOOL = {"double", "enter", "on", "keep"}
+_NUM = {"x", "y", "w", "h", "x1", "y1", "x2", "y2", "amount", "seconds", "dx", "dy", "ms", "scroll", "yaw", "pitch",
+        "times", "requested", "actual"}
+_INT = {"id", "slot"}
+_BOOL = {"double", "enter", "on", "keep", "shift", "sprint", "jump", "sneak"}
 
 
 _FAIL_START = ("no control", "no window", "unknown tool", "bad arguments", "bad input", "blocked", "game mode is off",

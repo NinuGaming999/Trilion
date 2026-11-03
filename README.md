@@ -38,6 +38,15 @@ Say *"Trilion, start playing <game>"* (the game window must be open, ideally bor
 - A local 7-9B model decides about once per second or two: good for turn-based, puzzle, card, strategy, point-and-click and slow exploration games; not for twitch shooters or rhythm games.
 - Use it for **single-player games**. Online games with anti-cheat may block fake input or ban the account. If a game runs as administrator, start Trilion as administrator too.
 
+### Minecraft mode (v0.6)
+Say **"play Minecraft"** with a single-player world open (Java edition). Trilion uses only the keyboard and mouse, like a player:
+- **Exact camera:** it converts "that block over there" into the exact number of mouse counts using Minecraft's own sensitivity maths and your FOV (`mc_aim`), then looks again and corrects.
+- **Real player actions:** hold-to-mine, sword hits spaced for the cooldown, hold-to-eat, place blocks, hotbar, inventory, shift-click.
+- **Safety:** the launcher window is never typed into; held keys and buttons are released on **Ctrl+Alt+S**.
+- **Recommended Minecraft settings:** Raw Input ON, sensitivity 100%, FOV 70, FOV Effects 0%, View Bobbing OFF, Auto-Jump ON; turn off Windows "Enhance pointer precision". Say *"set up Minecraft"* to have it walk you through a quick camera calibration (settings `mc_sensitivity`, `mc_fov`, `mc_turn_scale` in `config.json`).
+- Built-in skills: `minecraft-setup`, `minecraft-survival`, `minecraft-building`. Say **"stop playing"** to leave game mode.
+- Honest limits: it thinks about once per second or two while the game keeps running, so Creative or Peaceful difficulty is the best way to start; survival at night is risky.
+
 ## Keys and tray
 `Ctrl+Alt+T` talk on/off from anywhere - `Ctrl+Alt+S` stop everything. The tray icon menu has Show, Talk, Stop, *Start with Windows* and *Close button hides to tray*.
 Slam the mouse into a screen corner to abort mouse control.
