@@ -59,7 +59,11 @@ def main():
         assistant = Assistant(rt, bridge)
         win = MainWindow(rt, assistant, bridge)
         win.setObjectName("trilionRoot")
-        win.setStyleSheet("QWidget#trilionRoot { background-color:#030b17; }\n" + win.styleSheet())
+        root_style = "QWidget#trilionRoot { background-color:#030b17; }\n"
+        win.setStyleSheet(root_style + win.styleSheet())
+        win.mode.currentTextChanged.connect(
+            lambda _name: win.setStyleSheet(root_style + win.styleSheet().replace(root_style, ""))
+        )
         state["win"] = win
         loading.finishing = True
         if minimized and win.tray_ok:
