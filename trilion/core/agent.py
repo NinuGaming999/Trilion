@@ -451,6 +451,7 @@ class Assistant:
             self.bridge.message.emit("action", f"{action['tool']} {json.dumps(action['args'], ensure_ascii=False)[:90]}")
             res = self.tools.run(action)
             bad = res.lower().startswith(("blocked", "unknown", "bad arguments")) or " failed:" in res.lower()
+            self.bridge.message.emit("result", f"{'fail' if bad else 'ok'}|{action['tool']}|{res[:120]}")
             if bad:
                 speech = "Sorry, that did not work."
                 self.bridge.message.emit("error", res[:200])
@@ -522,6 +523,7 @@ class Assistant:
                                    "with coordinates from the screenshot instead.")
                     continue
                 res = self.tools.run(a)
+                self.bridge.message.emit("result", f"{'fail' if is_failure(res) else 'ok'}|{tool}|{res[:120]}")
                 if is_failure(res):
                     fails[tool] = fails.get(tool, 0) + 1
                     ui_dead = "does not expose" in res or "not available" in res.lower()

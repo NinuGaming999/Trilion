@@ -10,6 +10,14 @@ Go to the **[Releases](../../releases/latest)** page and download **`Trilion-Set
 On the **first launch** Trilion downloads the engine and models (about 9 GB) once into `%LOCALAPPDATA%\Trilion`
 with a progress bar. Later launches only load the models into memory.
 
+## The interface (v0.7): Trilion Command Center
+A dark-glass dashboard with a rotating triangle-mesh **AI core**, and every panel shows real data:
+- **AI Core Overview, Local Models, Active Agents:** live status of the brain, ears, voice, hands, eyes and game player (they light up and animate while they work).
+- **Live Intelligence Feed + Mission Timeline:** what you said, what Trilion replied, every action it ran (Running / Done / Failed), and warnings. The search box filters the feed.
+- **System Monitor:** CPU, RAM, disk and GPU memory. **Memory Insights:** what Trilion remembers, session turns, tool calls.
+- **Talk bar:** the big *TALK TO TRILION* button (or the mic in the sidebar, or Ctrl+Alt+T) with a triangular waveform that reacts to your voice and to Trilion's.
+- **Pages:** Command Center, AI Core, Conversations, Tools & Skills, Memory, Game Mode, Settings. *Focus Mode* hides everything except the core and the feed. The red square stops everything.
+
 ## The brain (v0.4)
 Trilion now runs **Qwen3.5 9B** (Q6_K, vision built in) through llama.cpp, with "thinking" switched off for speed.
 Replies are forced into a strict `{say, action}` JSON format by a grammar, so a command can never be malformed or read aloud.
