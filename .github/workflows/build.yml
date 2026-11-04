@@ -40,28 +40,30 @@ jobs:
           choco install innosetup -y --no-progress
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\trilion.iss
       - name: Portable zip
-        run: Compress-Archive -Path dist\Trilion -DestinationPath dist\Trilion-portable.zip -CompressionLevel Optimal
+        run: Compress-Archive -Path dist\Trilion -DestinationPath dist\Trilion-Beta-portable.zip -CompressionLevel Optimal
       - name: Show sizes
         run: Get-ChildItem dist\*.exe, dist\*.zip | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}
       - name: Publish GitHub Release (fast CDN download)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          name: Trilion ${{ github.ref_name }}
+          name: Trilion ${{ github.ref_name }} (beta - new Command Center interface)
+          prerelease: true
+          make_latest: false
           generate_release_notes: true
           body: |
-            **Download `Trilion-Setup.exe`**, run it, then launch Trilion from the desktop shortcut.
+            **BETA - installs next to your normal Trilion as "Trilion Beta".** Download `Trilion-Beta-Setup.exe`, run it, then launch *Trilion Beta*. Run only one Trilion at a time (they share your GPU and settings).
             The first launch downloads the AI models once (about 6 GB) with a progress bar.
-            `Trilion-portable.zip` is the same app without an installer.
+            `Trilion-Beta-portable.zip` is the same beta without an installer.
           files: |
-            dist/Trilion-Setup.exe
-            dist/Trilion-portable.zip
+            dist/Trilion-Beta-Setup.exe
+            dist/Trilion-Beta-portable.zip
       - name: Keep a copy as an Actions artifact (manual runs only)
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: Trilion-Windows
           path: |
-            dist/Trilion-Setup.exe
-            dist/Trilion-portable.zip
+            dist/Trilion-Beta-Setup.exe
+            dist/Trilion-Beta-portable.zip
           compression-level: 0

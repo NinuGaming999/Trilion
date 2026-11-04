@@ -1,12 +1,13 @@
 ; Inno Setup script: wraps the fast-starting onedir build into ONE Trilion-Setup.exe
 [Setup]
-AppName=Trilion
-AppVersion=0.7.0
+AppId=TrilionBetaCommandCenter
+AppName=Trilion Beta
+AppVersion=0.7.1-beta.1
 AppPublisher=NinuGaming
-DefaultDirName={autopf}\Trilion
-DefaultGroupName=Trilion
+DefaultDirName={autopf}\Trilion Beta
+DefaultGroupName=Trilion Beta
 OutputDir=..\dist
-OutputBaseFilename=Trilion-Setup
+OutputBaseFilename=Trilion-Beta-Setup
 SetupIconFile=..\assets\trilion.ico
 UninstallDisplayIcon={app}\Trilion.exe
 Compression=lzma2/ultra64
@@ -20,8 +21,8 @@ DisableProgramGroupPage=yes
 Source: "..\dist\Trilion\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
 [Icons]
-Name: "{autodesktop}\Trilion"; Filename: "{app}\Trilion.exe"
-Name: "{group}\Trilion"; Filename: "{app}\Trilion.exe"
+Name: "{autodesktop}\Trilion Beta"; Filename: "{app}\Trilion.exe"
+Name: "{group}\Trilion Beta"; Filename: "{app}\Trilion.exe"
 
 [Run]
-Filename: "{app}\Trilion.exe"; Description: "Launch Trilion"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\Trilion.exe"; Description: "Launch Trilion Beta"; Flags: nowait postinstall skipifsilent
