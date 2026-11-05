@@ -176,6 +176,7 @@ class GameInput:
         self.deadman = deadman
         self.keys = set()
         self.buttons = set()
+        self.last_move = (0, 0)
         self.lock = threading.RLock()
         self.last_cmd = time.monotonic()
         self._watch = None
@@ -226,6 +227,7 @@ class GameInput:
         dx, dy = int(dx), int(dy)
         if not dx and not dy:
             return True
+        self.last_move = (dx, dy)
         n = max(1, math.ceil(ms / 1000.0 / self.STEP))
         t0, px, py = time.perf_counter(), 0, 0
         for i in range(1, n + 1):

@@ -7,6 +7,46 @@ LAST = {"scale": 1.0, "left": 0, "top": 0, "w": 0, "h": 0, "thumb": None}
 # unit = 0..1 fractions. Measured per brain at first launch (see calibrate.py).
 COORD = {"mode": "pixel"}
 
+# Trilion's own visible windows (overlay, and the main window when it is shown in recordings) are painted black
+# in the screenshots the AI sees, so it never confuses them with the real screen. Each entry returns a rect
+# (left, top, right, bottom) in real screen pixels, or None when that window is not visible.
+MASKS = []
+
+
+def add_mask(fn):
+    if fn not in MASKS:
+        MASKS.append(fn)
+
+
+def remove_mask(fn):
+    if fn in MASKS:
+        MASKS.remove(fn)
+
+
+def mask_rects():
+    out = []
+    for fn in list(MASKS):
+        try:
+            r = fn()
+            if r:
+                out.append(tuple(int(v) for v in r))
+        except Exception:
+            pass
+    return out
+
+
+def apply_masks(im, rects, origin_left, origin_top, scale=1.0):
+    """Paint black boxes over `rects` (real screen px) on an image whose top-left is (origin_left, origin_top)."""
+    if not rects:
+        return im
+    from PIL import ImageDraw
+    d = ImageDraw.Draw(im)
+    for l, t, r, b in rects:
+        box = [(l - origin_left) * scale, (t - origin_top) * scale, (r - origin_left) * scale, (b - origin_top) * scale]
+        if box[2] > 0 and box[3] > 0 and box[0] < im.width and box[1] < im.height:
+            d.rectangle(box, fill=(0, 0, 0))
+    return im
+
 
 def grab(max_width=1280, quality=85):
     import mss
@@ -15,6 +55,7 @@ def grab(max_width=1280, quality=85):
         mon = s.monitors[1]
         raw = s.grab(mon)
         im = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+    im = apply_masks(im, mask_rects(), mon["left"], mon["top"])
     scale = min(1.0, max_width / im.width)
     if scale < 1.0:
         im = im.resize((int(im.width * scale), int(im.height * scale)), Image.LANCZOS)
@@ -53,6 +94,7 @@ def zoom(x, y, w, h, out_width=1000):
     with mss.mss() as s:
         raw = s.grab({"left": x0, "top": y0, "width": max(8, x1 - x0), "height": max(8, y1 - y0)})
         im = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+    im = apply_masks(im, mask_rects(), x0, y0)
     k = min(3.0, out_width / im.width)
     if abs(k - 1) > 0.05:
         im = im.resize((int(im.width * k), int(im.height * k)), Image.LANCZOS)

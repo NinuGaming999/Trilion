@@ -207,9 +207,10 @@ class AgentCard(QWidget):
 class OrbWidget(QWidget):
     """The Trilion core: a rotating mesh sphere made of triangles, with orbit rings and a glowing base."""
 
-    def __init__(self, version=""):
+    def __init__(self, version="", compact=False):
         super().__init__()
         self.version = version
+        self.compact = compact          # overlay: no name text, no base platform
         self.t, self.level, self.state = 0.0, 0.0, "idle"
         self.color = list(STATE_COLORS["idle"])
         self.verts, self.edges = self._icosphere(2)
@@ -265,7 +266,7 @@ class OrbWidget(QWidget):
         p.setBrush(rg)
         p.drawEllipse(QPointF(cx, cy), R * 1.9, R * 1.9)
         # base platform
-        for i, k in enumerate((1.15, 0.9, 0.65)):
+        for i, k in enumerate(() if self.compact else (1.15, 0.9, 0.65)):
             p.setPen(pen(c, 1.2, 150 - i * 35))
             p.setBrush(Qt.NoBrush)
             p.drawEllipse(QPointF(cx, cy + R * 1.18), R * k * 1.25, R * k * 0.2)
@@ -305,6 +306,8 @@ class OrbWidget(QWidget):
             if z > 0.1:
                 p.setBrush(QColor(200, 245, 255, int(60 + 150 * z)))
                 p.drawEllipse(QPointF(x, y), 1.4, 1.4)
+        if self.compact:
+            return
         # name (on a dark band so it stays readable over the mesh)
         band = QLinearGradient(cx - R, 0, cx + R, 0)
         band.setColorAt(0, QColor(4, 14, 32, 0))

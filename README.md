@@ -18,6 +18,14 @@ A dark-glass dashboard with a rotating triangle-mesh **AI core**, and every pane
 - **Talk bar:** the big *TALK TO TRILION* button (or the mic in the sidebar, or Ctrl+Alt+T) with a triangular waveform that reacts to your voice and to Trilion's.
 - **Pages:** Command Center, AI Core, Conversations, Tools & Skills, Memory, Game Mode, Settings. *Focus Mode* hides everything except the core and the feed. The red square stops everything.
 
+## Overlay and screen recording (v0.9)
+- **Overlay:** an always-on-top, see-through box with the Trilion core and a few lines of terminal data (state, brain, tokens/s, CPU/RAM/VRAM, mic/voice levels, your last actions with Done/Failed marks, and held keys + mouse movement in game mode). It never takes focus and clicks pass straight through it. Turn it on in Settings, the tray menu, or with **Ctrl+Alt+O**; **Ctrl+Alt+U** unlocks it so you can drag it; **Ctrl+Alt+M** cycles Compact / Standard / Full. Pick a corner and opacity in Settings.
+- **Recordings:** the overlay is a normal window, so recorders that capture the whole desktop (OBS *Display Capture*, NVIDIA, Windows Game Bar on the full screen) include it. Recorders that capture one window only (OBS *Game Capture* / *Window Capture*) cannot, and true exclusive-fullscreen games hide everything: use borderless windowed.
+- **OBS Browser Source (works with any capture method):** Settings > *Serve the overlay to OBS*, copy the URL, then in OBS add **Sources > Browser** with that URL (width 440, height 520). It is served only on `127.0.0.1` (this PC). `?size=compact|standard|full` and `&bg=0` (no background) change the look.
+- **The AI never sees the overlay:** Trilion paints its own windows black in the screenshots it takes, and the prompt tells it to ignore black boxes.
+- **Trilion's main window** is hidden from recordings by default (so the AI can see what is behind it). Tick *Show Trilion's main window in screen recordings* to record it too.
+- If the **tray icon** is missing, Windows 11 has probably put it under the **^** arrow next to the clock; Trilion now tells you so on first launch and never shows a blank icon.
+
 ## The brain (v0.4)
 Trilion now runs **Qwen3.5 9B** (Q6_K, vision built in) through llama.cpp, with "thinking" switched off for speed.
 Replies are forced into a strict `{say, action}` JSON format by a grammar, so a command can never be malformed or read aloud.

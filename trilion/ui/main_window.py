@@ -2,14 +2,19 @@
 import html
 import os
 import time
+from collections import deque
 
 from PySide6.QtCore import QDateTime, QTimer, Qt
-from PySide6.QtGui import QAction, QLinearGradient, QPainter, QRadialGradient
+from PySide6.QtGui import QAction, QIcon, QLinearGradient, QPainter, QPixmap, QRadialGradient
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                               QMenu, QMessageBox, QPushButton, QStackedWidget, QSystemTrayIcon, QTextBrowser,
-                               QVBoxLayout, QWidget)
+                               QMenu, QMessageBox, QPushButton, QScrollArea, QSlider, QStackedWidget,
+                               QSystemTrayIcon, QTextBrowser, QVBoxLayout, QWidget)
 
+from ..core import screen
+from ..core.hud import WebHud, hud_lines
 from ..core.sysmon import SysMon
+from . import winutil
+from .overlay import CORNERS, SIZES, Overlay
 from .theme import C, col
 from .wave import TriWave
 from .widgets import (AgentCard, Brand, Chip, CmdButton, Constellation, Donut, FeedList, IconButton, MicButton,
@@ -75,10 +80,22 @@ class MainWindow(QWidget):
         self._slow_n = 0
         self.sysmon = SysMon()
         self.sysmon.start()
+        from .. import __version__
+        self.hud_events = deque(maxlen=8)
+        self.hud = None
+        self._tick_n = 0
+        self._keys_edge = {"o": False, "u": False, "m": False}
+        self.overlay = Overlay(self.cfg, __version__)
         self._build()
         self._wire()
         self._init_tray()
         self._apply_affinity()
+        screen.add_mask(self._overlay_mask)   # Trilion's own windows are blacked out in the AI's screenshots
+        screen.add_mask(self._main_mask)
+        if self.cfg.get("overlay_on"):
+            self.overlay.show()
+        if self.cfg.get("hud_web"):
+            self.set_web_hud(True)
         self._feed("live", "Trilion is online. Say something, tap the talk bar, or type a command.")
         for m in getattr(rt, "warnings", []):
             self._feed("warn", m)
@@ -407,25 +424,93 @@ class MainWindow(QWidget):
 
     def _page_settings(self):
         p = Panel("Settings")
-        for text, key in (("Watch the screen (attach a screenshot to each request)", "watch_screen"),
-                          ("Wake word: only react after I say \"Trilion\"", "wake_word"),
-                          ("Ask before shell commands and file writes", "confirm_risky"),
-                          ("Always ask before Delete / Pay / Send style clicks", "confirm_critical"),
-                          ("Strict replies (forced JSON format)", "structured"),
-                          ("Close button hides to the tray", "close_to_tray")):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setStyleSheet("QScrollArea{background:transparent}")
+        inner = QWidget()
+        inner.setStyleSheet("background:transparent")
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(0, 0, 8, 0)
+        scroll.setWidget(inner)
+        p.body.addWidget(scroll, 1)
+
+        def section(text):
+            lb = QLabel(text.upper())
+            lb.setStyleSheet("color:#38c9ff;font-weight:600;letter-spacing:2px;padding-top:10px")
+            lay.addWidget(lb)
+
+        def check(text, key=None, slot=None, checked=None):
             cb = QCheckBox(text)
-            cb.setChecked(bool(self.cfg.get(key, False)))
-            cb.toggled.connect(lambda v, k=key: self._cfg(k, v))
-            p.body.addWidget(cb)
-        mic = QCheckBox("Microphone listening")
-        mic.setChecked(True)
-        mic.toggled.connect(lambda v: setattr(self.assistant, "mic_enabled", v))
-        p.body.addWidget(mic)
+            cb.setChecked(bool(self.cfg.get(key, False)) if checked is None else checked)
+            cb.toggled.connect(slot or (lambda v, k=key: self._cfg(k, v)))
+            lay.addWidget(cb)
+            return cb
+
+        section("Behaviour")
+        check("Watch the screen (attach a screenshot to each request)", "watch_screen")
+        check("Wake word: only react after I say \"Trilion\"", "wake_word")
+        check("Ask before shell commands and file writes", "confirm_risky")
+        check("Always ask before Delete / Pay / Send style clicks", "confirm_critical")
+        check("Strict replies (forced JSON format)", "structured")
+        check("Close button hides to the tray", "close_to_tray")
+        check("Microphone listening", slot=lambda v: setattr(self.assistant, "mic_enabled", v), checked=True)
         from ..paths import autostart_enabled, set_autostart
-        auto = QCheckBox("Start with Windows (hidden in the tray)")
-        auto.setChecked(autostart_enabled())
-        auto.toggled.connect(lambda v: set_autostart(v))
-        p.body.addWidget(auto)
+        check("Start with Windows (hidden in the tray)", slot=lambda v: set_autostart(v), checked=autostart_enabled())
+
+        section("Overlay & screen recording")
+        self.cb_overlay = check("Show the always-on-top overlay: core + live data (Ctrl+Alt+O)", slot=self.set_overlay,
+                                checked=bool(self.cfg.get("overlay_on")))
+        self.cb_lock = check("Overlay is click-through (untick, or Ctrl+Alt+U, to drag it)", slot=self.set_overlay_locked,
+                             checked=self.overlay.locked)
+        self.cb_rec = check("Show Trilion's main window in screen recordings", slot=self.set_show_in_recordings,
+                            checked=bool(self.cfg.get("show_in_recordings")))
+        note = QLabel("The overlay always appears in recordings that capture the desktop (OBS Display Capture, NVIDIA, "
+                      "Windows Game Bar full screen). Exclusive-fullscreen games hide it: use borderless windowed. "
+                      "Trilion's own screenshots black the overlay out so the AI ignores it.")
+        note.setWordWrap(True)
+        note.setObjectName("dim")
+        lay.addWidget(note)
+        r = QHBoxLayout()
+        r.addWidget(QLabel("Overlay size"))
+        self.size_box = QComboBox()
+        for k in SIZES:
+            self.size_box.addItem(k.capitalize(), k)
+        self.size_box.setCurrentIndex(max(0, self.size_box.findData(self.overlay.size_name)))
+        self.size_box.currentIndexChanged.connect(lambda _: self.overlay.set_size(self.size_box.currentData()))
+        r.addWidget(self.size_box)
+        r.addWidget(QLabel("Corner"))
+        self.corner_box = QComboBox()
+        for k in CORNERS:
+            self.corner_box.addItem(k.replace("-", " ").title(), k)
+        self.corner_box.setCurrentIndex(max(0, self.corner_box.findData(self.cfg.get("overlay_corner", "top-right"))))
+        self.corner_box.currentIndexChanged.connect(lambda _: self.overlay.set_corner(self.corner_box.currentData()))
+        r.addWidget(self.corner_box)
+        r.addWidget(QLabel("Opacity"))
+        self.opacity = QSlider(Qt.Horizontal)
+        self.opacity.setRange(30, 100)
+        self.opacity.setValue(int(float(self.cfg.get("overlay_opacity", 0.88)) * 100))
+        self.opacity.setFixedWidth(120)
+        self.opacity.valueChanged.connect(lambda v: self.overlay.set_opacity(v / 100))
+        r.addWidget(self.opacity)
+        r.addStretch()
+        lay.addLayout(r)
+        self.cb_web = check("Serve the overlay to OBS as a Browser Source (works with any capture method)",
+                            slot=self.set_web_hud, checked=bool(self.cfg.get("hud_web")))
+        r = QHBoxLayout()
+        self.url_lbl = QLabel("(off)")
+        self.url_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.url_lbl.setStyleSheet("color:#19d3ff;font-family:Consolas")
+        r.addWidget(self.url_lbl, 1)
+        r.addWidget(_btn("Copy URL", slot=self._copy_hud_url))
+        lay.addLayout(r)
+        hint = QLabel("In OBS: Sources > + > Browser > paste the URL > width 440, height 520. "
+                      "Add ?size=compact or ?size=full for other sizes, and &bg=0 for no background.")
+        hint.setWordWrap(True)
+        hint.setObjectName("dim")
+        lay.addWidget(hint)
+
+        section("Devices & brain")
         r1 = QHBoxLayout()
         r1.addWidget(QLabel("Microphone"))
         self.dev = QComboBox()
@@ -434,7 +519,7 @@ class MainWindow(QWidget):
         self.dev.currentIndexChanged.connect(self._pick_dev)
         r1.addWidget(self.dev)
         r1.addStretch()
-        p.body.addLayout(r1)
+        lay.addLayout(r1)
         r2 = QHBoxLayout()
         r2.addWidget(QLabel("Brain (restart needed)"))
         self.brain_box = QComboBox()
@@ -445,13 +530,13 @@ class MainWindow(QWidget):
         self.brain_box.currentIndexChanged.connect(lambda _: self._cfg("brain", self.brain_box.currentData()))
         r2.addWidget(self.brain_box)
         r2.addStretch()
-        p.body.addLayout(r2)
+        lay.addLayout(r2)
         r3 = QHBoxLayout()
         r3.addWidget(_btn("Copy log", slot=self._copy_log))
         r3.addWidget(_btn("Open logs folder", slot=self._open_logs))
         r3.addStretch()
-        p.body.addLayout(r3)
-        p.body.addStretch()
+        lay.addLayout(r3)
+        lay.addStretch()
         return p
 
     # ------------------------------------------------------------------ wiring
@@ -510,8 +595,24 @@ class MainWindow(QWidget):
         self.wave.set_state(s)
         self._refresh_agents()
 
+    def _hud_event(self, kind, text):
+        self.hud_events.append({"k": kind, "text": text})
+
     def _on_message(self, role, text):
         self._log(role, text)
+        if role == "user":
+            self._hud_event("you", f"you: {text}")
+        elif role == "assistant":
+            self._hud_event("reply", text)
+        elif role == "action":
+            self._hud_event("run", self._short_action(text))
+        elif role == "result":
+            for ev in reversed(self.hud_events):
+                if ev["k"] == "run":
+                    ev["k"] = "ok" if text.startswith("ok|") else "fail"
+                    break
+        elif role == "error":
+            self._hud_event("warn", text)
         if role == "user":
             self.turns += 1
             self._feed("you", f"You: {text}")
@@ -618,9 +719,31 @@ class MainWindow(QWidget):
         self.voice_wave.tick(t, wl)
         sub = "Recording... tap again to send" if self.talking else STATE_SUB.get(shown, "")
         self.talk.sub = sub
+        self._tick_n += 1
+        if self._tick_n % 3 == 0 and (self.overlay.isVisible() or self.hud):
+            snap = self._hud_snapshot(shown, wl, c)
+            if self.overlay.isVisible():
+                self.overlay.set_snapshot(snap)
+            if self.hud:
+                self.hud.update(snap)
         self.voice_lbl.setText("Recording..." if self.talking else VOICE_TXT.get(shown, "Ready"))
         self.mic_hint.setText("Tap to send" if self.talking else ("Tap to Speak" if shown == "idle" else ""))
         self.update()
+
+    def _hud_snapshot(self, shown, wl, c):
+        from .. import __version__
+        d, tools = self.sysmon.data, self.assistant.tools
+        game = None
+        if tools.game_on:
+            g = tools.game
+            game = {"on": True, "profile": tools.game_profile, "keys": sorted(g.keys),
+                    "buttons": sorted(g.buttons), "move": list(g.last_move)}
+        llm = self.rt.llm
+        brain = llm.brain["label"].split(" (")[0] if hasattr(llm, "brain") else "Local model"
+        return {"version": __version__, "state": shown, "color": [int(x) for x in c], "level": round(wl, 3),
+                "brain": brain, "tps": getattr(llm, "last_tps", None), "cpu": d["cpu"], "ram": d["ram"],
+                "gpu": d["gpu"], "vram": d["vram"], "vram_total": d["vram_total"], "mic": self.mic_lvl,
+                "out": self.out_lvl, "events": list(self.hud_events), "game": game}
 
     def _slow(self):
         now = QDateTime.currentDateTime()
@@ -743,6 +866,78 @@ class MainWindow(QWidget):
             "<p style='color:#9cc4ee'>Hotkeys: <b>Ctrl+Alt+T</b> talk, <b>Ctrl+Alt+S</b> stop and release everything.</p>"
             "<p style='color:#9cc4ee'>Minecraft tip: Raw Input ON, sensitivity 100%, FOV 70, FOV Effects 0%, View Bobbing OFF.</p>")
 
+    # ------------------------------------------------------------------ overlay / recording / OBS
+    def _overlay_mask(self):
+        return self.overlay.rect_real()
+
+    def _main_mask(self):
+        if not self.cfg.get("show_in_recordings") or not self.isVisible() or self.isMinimized():
+            return None
+        return winutil.window_rect(int(self.winId()))
+
+    def _sync_checks(self):
+        for cb, val in ((getattr(self, "cb_overlay", None), self.overlay.isVisible()),
+                        (getattr(self, "cb_lock", None), self.overlay.locked),
+                        (getattr(self, "cb_rec", None), bool(self.cfg.get("show_in_recordings"))),
+                        (getattr(self, "cb_web", None), self.hud is not None)):
+            if cb is not None and cb.isChecked() != val:
+                cb.blockSignals(True)
+                cb.setChecked(val)
+                cb.blockSignals(False)
+        for act, val in ((getattr(self, "act_overlay", None), self.overlay.isVisible()),
+                         (getattr(self, "act_unlock", None), not self.overlay.locked)):
+            if act is not None and act.isChecked() != val:
+                act.blockSignals(True)
+                act.setChecked(val)
+                act.blockSignals(False)
+
+    def set_overlay(self, on):
+        self._cfg("overlay_on", bool(on))
+        if on:
+            self.overlay.apply_layout()
+            self.overlay.show()
+        else:
+            self.overlay.hide()
+        self._sync_checks()
+
+    def set_overlay_locked(self, locked):
+        self.overlay.set_locked(locked)
+        self._sync_checks()
+
+    def cycle_overlay_size(self):
+        name = self.overlay.cycle_size()
+        self._feed("info", f"Overlay size: {name}")
+
+    def set_show_in_recordings(self, on):
+        self._cfg("show_in_recordings", bool(on))
+        self._apply_affinity()
+        self._sync_checks()
+
+    def set_web_hud(self, on):
+        self._cfg("hud_web", bool(on))
+        if on and self.hud is None:
+            try:
+                self.hud = WebHud(int(self.cfg.get("hud_port", 17655)))
+                self.hud.start()
+                self._feed("info", f"OBS Browser Source ready: {self.hud.url}")
+            except Exception as e:
+                self.hud = None
+                self._cfg("hud_web", False)
+                self._feed("warn", f"Could not start the OBS source: {e}")
+        elif not on and self.hud is not None:
+            self.hud.stop()
+            self.hud = None
+        if getattr(self, "url_lbl", None):
+            self.url_lbl.setText(self.hud.url + "?size=standard" if self.hud else "(off)")
+        self._sync_checks()
+
+    def _copy_hud_url(self):
+        if self.hud:
+            QApplication.clipboard().setText(self.hud.url + "?size=standard")
+            self._feed("info", "OBS Browser Source URL copied. In OBS: Sources > + > Browser > paste it.")
+        else:
+            self._feed("warn", "Turn on 'Serve the overlay to OBS' first.")
+
     # ------------------------------------------------------------------ settings helpers
     def _cfg(self, k, v):
         self.cfg[k] = v
@@ -791,7 +986,19 @@ class MainWindow(QWidget):
     # ------------------------------------------------------------------ tray / hotkeys / window
     def _init_tray(self):
         self.tray_ok = QSystemTrayIcon.isSystemTrayAvailable()
-        self.tray = QSystemTrayIcon(QApplication.windowIcon(), self)
+        icon = QApplication.windowIcon()
+        if icon.isNull():                       # never show a blank tray icon
+            from PySide6.QtGui import QPainter as _P
+            from .wave import draw_logo
+            pm = QPixmap(64, 64)
+            pm.fill(Qt.transparent)
+            pp = _P(pm)
+            pp.setRenderHint(_P.Antialiasing)
+            draw_logo(pp, 32, 34, 26, (25, 211, 255))
+            pp.end()
+            icon = QIcon(pm)
+            QApplication.setWindowIcon(icon)
+        self.tray = QSystemTrayIcon(icon, self)
         self.tray.setToolTip("Trilion - Ctrl+Alt+T talk, Ctrl+Alt+S stop")
         menu = QMenu()
         act_show = QAction("Show Trilion", menu)
@@ -807,12 +1014,23 @@ class MainWindow(QWidget):
         act_tray = QAction("Close button hides to tray", menu, checkable=True)
         act_tray.setChecked(bool(self.cfg.get("close_to_tray", False)))
         act_tray.toggled.connect(lambda v: self._cfg("close_to_tray", v))
+        self.act_overlay = QAction("Show overlay (Ctrl+Alt+O)", menu, checkable=True)
+        self.act_overlay.setChecked(bool(self.cfg.get("overlay_on")))
+        self.act_overlay.toggled.connect(self.set_overlay)
+        self.act_unlock = QAction("Unlock overlay to drag it (Ctrl+Alt+U)", menu, checkable=True)
+        self.act_unlock.setChecked(not self.overlay.locked)
+        self.act_unlock.toggled.connect(lambda v: self.set_overlay_locked(not v))
+        act_size = QAction("Next overlay size (Ctrl+Alt+M)", menu)
+        act_size.triggered.connect(self.cycle_overlay_size)
         act_old = QAction("Use the lighter brain (Qwen2.5-VL 7B) - restart needed", menu, checkable=True)
         act_old.setChecked(self.cfg.get("brain") == "qwen2.5-vl-7b")
         act_old.toggled.connect(lambda v: self._cfg("brain", "qwen2.5-vl-7b" if v else "qwen3.5-9b"))
         act_quit = QAction("Quit Trilion", menu)
         act_quit.triggered.connect(self._quit)
         for a in (act_show, act_talk, act_stop):
+            menu.addAction(a)
+        menu.addSeparator()
+        for a in (self.act_overlay, self.act_unlock, act_size):
             menu.addAction(a)
         menu.addSeparator()
         for a in (act_auto, act_tray, act_old):
@@ -824,6 +1042,11 @@ class MainWindow(QWidget):
         self.tray.activated.connect(lambda r: self._show_front() if r == QSystemTrayIcon.Trigger else None)
         if self.tray_ok:
             self.tray.show()
+            if not self.cfg.get("tray_hint_shown"):
+                self.tray.showMessage("Trilion is running",
+                                      "Its icon lives in the tray. If you do not see it, click the ^ arrow next to the "
+                                      "clock (Windows hides new icons there).", QSystemTrayIcon.Information, 8000)
+                self._cfg("tray_hint_shown", True)
 
     def _show_front(self):
         self.showNormal()
@@ -849,13 +1072,18 @@ class MainWindow(QWidget):
         if st and not self._hs:
             self._stop()
         self._ht, self._hs = t, st
+        for key, vk, fn in (("o", 0x4F, lambda: self.set_overlay(not self.overlay.isVisible())),   # Ctrl+Alt+O
+                            ("u", 0x55, lambda: self.set_overlay_locked(not self.overlay.locked)),  # Ctrl+Alt+U
+                            ("m", 0x4D, self.cycle_overlay_size)):                                  # Ctrl+Alt+M
+            now = combo and down(vk)
+            if now and not self._keys_edge[key]:
+                fn()
+            self._keys_edge[key] = now
 
     def _apply_affinity(self):
-        try:  # keep Trilion's own window out of the screenshots it takes
-            import ctypes
-            ctypes.windll.user32.SetWindowDisplayAffinity(int(self.winId()), 0x11)
-        except Exception:
-            pass
+        # Default: hidden from screenshots AND recordings (so the AI sees what is behind it).
+        # With "show in recordings" on, it is capturable and blacked out in the AI's screenshots instead.
+        winutil.set_capture_hidden(int(self.winId()), not self.cfg.get("show_in_recordings", False))
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -879,6 +1107,11 @@ class MainWindow(QWidget):
             e.ignore()
             return
         try:
+            screen.remove_mask(self._overlay_mask)
+            screen.remove_mask(self._main_mask)
+            self.overlay.hide()
+            if self.hud:
+                self.hud.stop()
             self.assistant.stop()
             self.rt.listener.stop()
             self.rt.player.close()

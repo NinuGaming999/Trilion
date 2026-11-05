@@ -39,6 +39,16 @@ DEFAULTS = {
     "watch_screen": True,     # attach a fresh screenshot to every request
     "confirm_risky": True,    # ask before shell commands / writing files
     "confirm_critical": True, # ALWAYS ask before clicking Delete / Pay / Send / Buy ... (independent of the above)
+    "overlay_on": False,          # always-on-top core + terminal data (shows up in screen recordings)
+    "overlay_size": "standard",   # compact | standard | full
+    "overlay_corner": "top-right",  # top-left | top-right | bottom-left | bottom-right | custom
+    "overlay_opacity": 0.88,
+    "overlay_locked": True,       # click-through; unlock (Ctrl+Alt+U) to drag it
+    "overlay_x": None, "overlay_y": None,
+    "show_in_recordings": False,  # False: Trilion's main window is hidden from recordings AND screenshots
+    "hud_web": False,             # serve the same HUD as an OBS Browser Source on 127.0.0.1
+    "hud_port": 17655,
+    "tray_hint_shown": False,
     "max_steps": 8,
     "screen_max_width": 1280,
     "config_version": 3,

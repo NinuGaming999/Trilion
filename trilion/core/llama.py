@@ -114,6 +114,7 @@ class LlamaServer:
         self.bin_dir = sub("llama")
         self.model_dir = sub("models", "llm") if self.brain["legacy_dir"] else sub("models", "llm", self.brain["key"])
         self.structured_ok = True
+        self.last_tps = None   # generation speed of the last reply (tokens per second)
         self.variant = 0      # 0 = all flags, 1 = without optional flags, 2 = also low memory
         self.restarts = 0
 
@@ -297,6 +298,7 @@ class LlamaServer:
             yield from strip_think(self._stream(body, cancel))
 
     def _stream(self, body, cancel):
+        t0, n = time.perf_counter(), 0
         with requests.post(f"http://127.0.0.1:{self.port}/v1/chat/completions", json=body,
                            stream=True, timeout=(5, 300)) as r:
             r.raise_for_status()
@@ -309,8 +311,18 @@ class LlamaServer:
                 if data == b"[DONE]":
                     return
                 try:
-                    delta = json.loads(data)["choices"][0]["delta"].get("content")
+                    obj = json.loads(data)
+                except Exception:
+                    continue
+                tm = obj.get("timings") if isinstance(obj, dict) else None
+                if tm and tm.get("predicted_per_second"):
+                    self.last_tps = float(tm["predicted_per_second"])
+                try:
+                    delta = obj["choices"][0]["delta"].get("content")
                 except Exception:
                     continue
                 if delta:
+                    n += 1
+                    if not (tm and tm.get("predicted_per_second")) and n > 3:
+                        self.last_tps = n / max(1e-3, time.perf_counter() - t0)   # estimate until the engine reports
                     yield delta

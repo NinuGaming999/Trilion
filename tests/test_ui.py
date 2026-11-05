@@ -48,8 +48,12 @@ class Mem:
         return "ok"
 
 
+class Game:
+    keys, buttons, last_move = {"w"}, set(), (5, -3)
+
+
 class Tools:
-    game_on, game_profile, game_window = False, "", ""
+    game_on, game_profile, game_window, game = False, "", "", Game()
 
 
 class Assistant:
@@ -158,3 +162,57 @@ def test_settings_write_config_and_short_action_labels(win):
     assert w.cfg["watch_screen"] is False
     assert w._short_action('click_type {"x": 5, "y": 6, "text": "hi", "enter": false}') == "click_type: 5, 6, hi"
     assert w._short_action("look") == "look"
+
+
+# ------------------------------------------------------------------ overlay / recording / OBS integration
+def test_overlay_toggle_masks_and_settings_stay_in_sync(win):
+    from trilion.core import screen
+    w, b, a, app = win
+    assert not w.overlay.isVisible() and w._overlay_mask() is None
+    w.set_overlay(True)
+    app.processEvents()
+    assert w.overlay.isVisible() and w.cfg["overlay_on"] is True and w.cb_overlay.isChecked()
+    assert w._overlay_mask() is not None and w._overlay_mask() in screen.mask_rects()      # AI screenshots black it out
+    w.set_overlay_locked(False)
+    assert not w.overlay.locked and not w.cb_lock.isChecked() and w.act_unlock.isChecked()
+    w.cycle_overlay_size()
+    assert w.overlay.size_name == "full"
+    w.set_overlay(False)
+    assert not w.overlay.isVisible() and w._overlay_mask() is None and not w.act_overlay.isChecked()
+
+
+def test_main_window_is_masked_only_when_it_is_shown_in_recordings(win):
+    w, b, a, app = win
+    assert w._main_mask() is None                         # default: hidden from recordings and screenshots
+    w.set_show_in_recordings(True)
+    assert w.cfg["show_in_recordings"] is True and w.cb_rec.isChecked()
+    assert w._main_mask() is not None or os.name != "nt"  # real window rect is a Windows API; offscreen has none
+
+
+def test_obs_source_starts_stops_and_streams_live_state(win):
+    import json as _json
+    import urllib.request
+    w, b, a, app = win
+    w.cfg["hud_port"] = 0
+    w.set_web_hud(True)
+    try:
+        assert w.hud is not None and w.cb_web.isChecked() and w.url_lbl.text().startswith("http://127.0.0.1:")
+        b.message.emit("action", 'open_app {"name": "discord"}')
+        b.message.emit("result", "ok|open_app|Opened discord.")
+        for _ in range(6):
+            w._tick()
+        data = _json.loads(urllib.request.urlopen(w.hud.url + "state").read())
+        assert data["version"] and data["events"][-1] == {"k": "ok", "text": "open_app: discord"}
+        assert data["game"] is None and any("open_app: discord" in t for t, _ in data["lines"]["full"])
+    finally:
+        w.set_web_hud(False)
+    assert w.hud is None and w.url_lbl.text() == "(off)"
+
+
+def test_hud_snapshot_reports_game_state(win):
+    w, b, a, app = win
+    a.tools.game_on, a.tools.game_profile = True, "minecraft"
+    snap = w._hud_snapshot("acting", 0.3, [25, 211, 255])
+    a.tools.game_on = False
+    assert snap["game"] == {"on": True, "profile": "minecraft", "keys": ["w"], "buttons": [], "move": [5, -3]}
+    assert snap["state"] == "acting" and snap["brain"] == "Qwen3.5 9B" and snap["color"] == [25, 211, 255]

@@ -1,7 +1,7 @@
 ; Inno Setup script: wraps the fast-starting onedir build into ONE Trilion-Setup.exe
 [Setup]
 AppName=Trilion
-AppVersion=0.8.0
+AppVersion=0.9.0
 AppPublisher=NinuGaming
 DefaultDirName={autopf}\Trilion
 DefaultGroupName=Trilion
