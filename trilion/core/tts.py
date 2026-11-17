@@ -1,5 +1,6 @@
 """Text-to-speech (Kokoro, ONNX, runs on CPU)."""
 import logging
+import threading
 
 from ..paths import sub
 from .download import download
@@ -22,8 +23,10 @@ class TTS:
         from kokoro_onnx import Kokoro
         self.k = Kokoro(str(model_dir / FILES[0]), str(model_dir / FILES[1]))
         self.voice = cfg["voice"]
+        self.lock = threading.Lock()   # the ONNX session is shared by the assistant and the avatar
         self.k.create("Ready.", voice=self.voice, speed=1.0, lang="en-us")  # warm-up
 
-    def synth(self, text):
-        samples, sr = self.k.create(text, voice=self.voice, speed=1.05, lang="en-us")
+    def synth(self, text, voice=None):
+        with self.lock:
+            samples, sr = self.k.create(text, voice=voice or self.voice, speed=1.05, lang="en-us")
         return samples, sr

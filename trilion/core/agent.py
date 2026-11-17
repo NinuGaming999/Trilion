@@ -347,6 +347,26 @@ class Assistant:
         self.busy = True
         self.q.put(("text", text, True))
 
+    def say_direct(self, text):
+        """Speak a line without running the agent (used by the avatar). Returns False if Trilion is busy."""
+        if self.busy or not text.strip():
+            return False
+        self.busy = True
+
+        def run():
+            try:
+                self.speaker.reset()
+                self._state("speaking")
+                self.speaker.say(text)
+                self.speaker.wait_done()
+            finally:
+                self.unmute_at = time.time() + 0.5
+                self.busy = not self.q.empty()
+                self.bridge.caption.emit("")
+                self._state("idle")
+        threading.Thread(target=run, daemon=True).start()
+        return True
+
     def stop(self):
         self.cancel.set()
         self.speaker.stop()

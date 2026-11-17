@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QHBoxLayout, 
                                QSystemTrayIcon, QTextBrowser, QVBoxLayout, QWidget)
 
 from ..core import screen
+from ..core.avatar import AvatarService
 from ..core.hud import WebHud, hud_lines
 from ..core.sysmon import SysMon
 from . import winutil
@@ -83,6 +84,8 @@ class MainWindow(QWidget):
         from .. import __version__
         self.hud_events = deque(maxlen=8)
         self.hud = None
+        self.avatar = None
+        self._hud_seq = 0
         self._tick_n = 0
         self._keys_edge = {"o": False, "u": False, "m": False}
         self.overlay = Overlay(self.cfg, __version__)
@@ -96,6 +99,8 @@ class MainWindow(QWidget):
             self.overlay.show()
         if self.cfg.get("hud_web"):
             self.set_web_hud(True)
+        if self.cfg.get("avatar_web"):
+            self.set_avatar_web(True)
         self._feed("live", "Trilion is online. Say something, tap the talk bar, or type a command.")
         for m in getattr(rt, "warnings", []):
             self._feed("warn", m)
@@ -510,6 +515,24 @@ class MainWindow(QWidget):
         hint.setObjectName("dim")
         lay.addWidget(hint)
 
+        section("3D avatar (web page)")
+        self.cb_avatar = check("Serve the 3D avatar page: Trilion as an interactive character", slot=self.set_avatar_web,
+                               checked=bool(self.cfg.get("avatar_web")))
+        check("Speak her reactions with Trilion's voice", "avatar_speak", checked=bool(self.cfg.get("avatar_speak", True)))
+        r = QHBoxLayout()
+        self.avatar_url_lbl = QLabel("(off)")
+        self.avatar_url_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.avatar_url_lbl.setStyleSheet("color:#19d3ff;font-family:Consolas")
+        r.addWidget(self.avatar_url_lbl, 1)
+        r.addWidget(_btn("Open", slot=self.open_avatar_page))
+        r.addWidget(_btn("Copy URL", slot=self._copy_avatar_url))
+        lay.addLayout(r)
+        ahint = QLabel("Drag to look around, scroll to zoom, touch her to interact (do not overdo it). She idles and reacts "
+                       "instantly on her own; Trilion's AI adds in-character lines. The model downloads once from your repo.")
+        ahint.setWordWrap(True)
+        ahint.setObjectName("dim")
+        lay.addWidget(ahint)
+
         section("Devices & brain")
         r1 = QHBoxLayout()
         r1.addWidget(QLabel("Microphone"))
@@ -596,7 +619,8 @@ class MainWindow(QWidget):
         self._refresh_agents()
 
     def _hud_event(self, kind, text):
-        self.hud_events.append({"k": kind, "text": text})
+        self._hud_seq += 1
+        self.hud_events.append({"k": kind, "text": text, "id": self._hud_seq})
 
     def _on_message(self, role, text):
         self._log(role, text)
@@ -879,7 +903,8 @@ class MainWindow(QWidget):
         for cb, val in ((getattr(self, "cb_overlay", None), self.overlay.isVisible()),
                         (getattr(self, "cb_lock", None), self.overlay.locked),
                         (getattr(self, "cb_rec", None), bool(self.cfg.get("show_in_recordings"))),
-                        (getattr(self, "cb_web", None), self.hud is not None)):
+                        (getattr(self, "cb_web", None), bool(self.cfg.get("hud_web")) and self.hud is not None),
+                        (getattr(self, "cb_avatar", None), bool(self.cfg.get("avatar_web")) and self.hud is not None)):
             if cb is not None and cb.isChecked() != val:
                 cb.blockSignals(True)
                 cb.setChecked(val)
@@ -913,23 +938,74 @@ class MainWindow(QWidget):
         self._apply_affinity()
         self._sync_checks()
 
+    def _ensure_server(self):
+        if self.hud is None:
+            self.hud = WebHud(int(self.cfg.get("hud_port", 17655)))
+            self.hud.start()
+        return self.hud
+
+    def _release_server(self):
+        if self.hud is not None and not self.cfg.get("hud_web") and not self.cfg.get("avatar_web"):
+            self.hud.stop()
+            self.hud, self.avatar = None, None
+
+    def _update_url_labels(self):
+        url = self.hud.url if self.hud else None
+        if getattr(self, "url_lbl", None):
+            self.url_lbl.setText(url + "?size=standard" if url and self.cfg.get("hud_web") else "(off)")
+        if getattr(self, "avatar_url_lbl", None):
+            self.avatar_url_lbl.setText(url + "avatar" if url and self.cfg.get("avatar_web") else "(off)")
+
     def set_web_hud(self, on):
         self._cfg("hud_web", bool(on))
-        if on and self.hud is None:
-            try:
-                self.hud = WebHud(int(self.cfg.get("hud_port", 17655)))
-                self.hud.start()
+        try:
+            if on:
+                self._ensure_server()
                 self._feed("info", f"OBS Browser Source ready: {self.hud.url}")
-            except Exception as e:
-                self.hud = None
-                self._cfg("hud_web", False)
-                self._feed("warn", f"Could not start the OBS source: {e}")
-        elif not on and self.hud is not None:
-            self.hud.stop()
+            else:
+                self._release_server()
+        except Exception as e:
             self.hud = None
-        if getattr(self, "url_lbl", None):
-            self.url_lbl.setText(self.hud.url + "?size=standard" if self.hud else "(off)")
+            self._cfg("hud_web", False)
+            self._feed("warn", f"Could not start the OBS source: {e}")
+        self._update_url_labels()
         self._sync_checks()
+
+    def set_avatar_web(self, on):
+        self._cfg("avatar_web", bool(on))
+        try:
+            if on:
+                hud = self._ensure_server()
+                if self.avatar is None:
+                    self.avatar = AvatarService(self.cfg, hud, llm=self.rt.llm, assistant=self.assistant,
+                                                tts=getattr(self.rt, "tts", None))
+                    self.avatar.prepare_fillers()
+                self.avatar.enabled = True
+                self.avatar.ensure_model_async()
+                self._feed("info", f"3D avatar page ready: {hud.url}avatar")
+            else:
+                if self.avatar is not None:
+                    self.avatar.enabled = False
+                self._release_server()
+        except Exception as e:
+            self._cfg("avatar_web", False)
+            self._feed("warn", f"Could not start the avatar page: {e}")
+        self._update_url_labels()
+        self._sync_checks()
+
+    def open_avatar_page(self):
+        if not self.cfg.get("avatar_web"):
+            self.set_avatar_web(True)
+        if self.hud:
+            import webbrowser
+            webbrowser.open(self.hud.url + "avatar")
+
+    def _copy_avatar_url(self):
+        if self.hud and self.cfg.get("avatar_web"):
+            QApplication.clipboard().setText(self.hud.url + "avatar")
+            self._feed("info", "Avatar URL copied.")
+        else:
+            self._feed("warn", "Turn on 'Serve the 3D avatar page' first.")
 
     def _copy_hud_url(self):
         if self.hud:
@@ -1020,6 +1096,8 @@ class MainWindow(QWidget):
         self.act_unlock = QAction("Unlock overlay to drag it (Ctrl+Alt+U)", menu, checkable=True)
         self.act_unlock.setChecked(not self.overlay.locked)
         self.act_unlock.toggled.connect(lambda v: self.set_overlay_locked(not v))
+        act_avatar = QAction("Open the 3D avatar page", menu)
+        act_avatar.triggered.connect(self.open_avatar_page)
         act_size = QAction("Next overlay size (Ctrl+Alt+M)", menu)
         act_size.triggered.connect(self.cycle_overlay_size)
         act_old = QAction("Use the lighter brain (Qwen2.5-VL 7B) - restart needed", menu, checkable=True)
@@ -1030,7 +1108,7 @@ class MainWindow(QWidget):
         for a in (act_show, act_talk, act_stop):
             menu.addAction(a)
         menu.addSeparator()
-        for a in (self.act_overlay, self.act_unlock, act_size):
+        for a in (self.act_overlay, self.act_unlock, act_size, act_avatar):
             menu.addAction(a)
         menu.addSeparator()
         for a in (act_auto, act_tray, act_old):
@@ -1112,6 +1190,7 @@ class MainWindow(QWidget):
             self.overlay.hide()
             if self.hud:
                 self.hud.stop()
+                self.hud = None
             self.assistant.stop()
             self.rt.listener.stop()
             self.rt.player.close()

@@ -1,7 +1,7 @@
 # PyInstaller spec - onedir build (starts much faster than onefile, which unpacks on every launch)
 from PyInstaller.utils.hooks import collect_all
 
-datas = [("assets/trilion.ico", "assets"), ("assets/trilion.png", "assets"),
+datas = [("assets/trilion.ico", "assets"), ("assets/trilion.png", "assets"), ("trilion/web", "trilion/web"),
          ("skills_builtin", "skills_builtin")]
 binaries, hidden = [], ["sounddevice", "pyautogui", "pyperclip", "mss"]
 for pkg in ("faster_whisper", "ctranslate2", "onnxruntime", "kokoro_onnx", "espeakng_loader",

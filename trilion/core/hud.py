@@ -4,6 +4,7 @@
 * WebHud: a tiny HTTP server on 127.0.0.1 (this PC only) serving a transparent page with the animated core."""
 import json
 import logging
+import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -94,10 +95,16 @@ class WebHud:
         self.httpd = None
         self._payload = b"{}"
         self._lock = threading.Lock()
+        self.token = secrets.token_urlsafe(18)   # POST requests must carry this (the page gets it from the server)
+        self.routes = []                          # [(prefix, fn(method, path, query, headers, body) -> (code, bytes, ctype[, headers]))]
+        self.state_hooks = []                     # fns returning dicts merged into /state
 
     @property
     def url(self):
         return f"http://127.0.0.1:{self.port}/"
+
+    def add_route(self, prefix, fn):
+        self.routes.append((prefix, fn))
 
     def update(self, snap):
         data = dict(snap)
@@ -122,23 +129,62 @@ class WebHud:
             def log_message(self, *a):
                 pass
 
-            def _send(self, code, body, ctype):
+            def _send(self, code, body, ctype, extra=None):
                 self.send_response(code)
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                for k, v in (extra or {}).items():
+                    self.send_header(k, v)
                 self.end_headers()
                 self.wfile.write(body)
 
+            def _host_ok(self):
+                # DNS-rebinding guard: only answer requests addressed to this PC's loopback name
+                return self.headers.get("Host", "").lower() in (f"127.0.0.1:{hud.port}", f"localhost:{hud.port}")
+
+            def _dispatch(self, method, path, query, body):
+                for prefix, fn in hud.routes:
+                    if path == prefix or path.startswith(prefix.rstrip("/") + "/"):
+                        res = fn(method, path, query, self.headers, body)
+                        if res:
+                            self._send(*res)
+                            return True
+                return False
+
             def do_GET(self):
+                if not self._host_ok():
+                    return self._send(403, b"forbidden", "text/plain")
                 path, _, query = self.path.partition("?")
                 if path == "/state":
                     with hud._lock:
-                        body = hud._payload
-                    self._send(200, body, "application/json")
+                        data = json.loads(hud._payload or b"{}")
+                    for hook in hud.state_hooks:
+                        try:
+                            data.update(hook())
+                        except Exception:
+                            log.exception("state hook failed")
+                    self._send(200, json.dumps(data, default=str).encode(), "application/json")
                 elif path in ("/", "/index.html"):
                     self._send(200, hud._page(query), "text/html; charset=utf-8")
-                else:
+                elif not self._dispatch("GET", path, query, None):
+                    self._send(404, b"not found", "text/plain")
+
+            def do_POST(self):
+                if not self._host_ok():
+                    return self._send(403, b"forbidden", "text/plain")
+                if self.headers.get("X-Trilion-Token") != hud.token:      # blocks other websites from posting here
+                    return self._send(403, b"bad token", "text/plain")
+                try:
+                    n = int(self.headers.get("Content-Length", "0"))
+                    if not 0 <= n <= 8192:
+                        return self._send(413, b"too large", "text/plain")
+                    body = json.loads(self.rfile.read(n) or b"{}")
+                except Exception:
+                    return self._send(400, b"bad json", "text/plain")
+                path, _, query = self.path.partition("?")
+                if not self._dispatch("POST", path, query, body):
                     self._send(404, b"not found", "text/plain")
 
         last = None
