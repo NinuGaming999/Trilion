@@ -31,6 +31,7 @@ A dark-glass dashboard with a rotating triangle-mesh **AI core**, and every pane
 - **Interactive:** poke, hold or stroke her. Touch her too much and she glares, warns, then sulks and turns away, and she forgives you after a cool-down.
 - **The AI is her logic:** instant reactions and stock voice lines play with no waiting; the AI adds in-character words when something notable happens. She never talks over a real task, and *Settings > avatar voice* can mute her.
 - **Model:** `genshin-impact-arlecchino.zip` is downloaded once on first use (or used from the repo copy when running from source) and unpacked safely. Dev server without the full app: `python scripts/avatar_dev.py`.
+- **Vibrant look (v0.10.1):** custom shading on every material (richer colour, cool shadows, warm highlights, glossy hair sheen, a rim light) and a soft halo behind her. Both shift from cool blue to hot red as she gets angry.
 - **Safe by design:** loopback only, Host-header check, a per-session token on every POST, path-traversal and zip-slip protection.
 
 ## The brain (v0.4)

@@ -5,6 +5,7 @@ import { Rig, B } from './rig.js';
 import { Face } from './face.js';
 import { Animator } from './anim.js';
 import { Mind, CANNED } from './mind.js';
+import { makeLook, makeHalo } from './look.js';
 
 const CFG = window.TRILION_CONFIG || {}, TOKEN = window.TRILION_TOKEN || '';
 const $ = (id) => document.getElementById(id);
@@ -22,12 +23,13 @@ const VIEWS = { bust: [[0, 1.42, 3.3], [0, 1.27, 0]], full: [[0, 1.1, 5.4], [0, 
 function setView(n) { const [p, t] = VIEWS[n]; camera.position.set(...p); controls.target.set(...t); controls.update(); }
 setView('bust');
 
-scene.add(new THREE.HemisphereLight(0xcfe3ff, 0x25182c, 1.1));
-const key = new THREE.DirectionalLight(0xffffff, 1.5); key.position.set(1.6, 2.6, 3.2); scene.add(key);
+scene.add(new THREE.HemisphereLight(0xd6e6ff, 0x3a2146, 1.25));
+const key = new THREE.DirectionalLight(0xfff1e0, 1.7); key.position.set(1.6, 2.6, 3.2); scene.add(key);
 const rim = new THREE.DirectionalLight(0xff3b4e, 1.0); rim.position.set(-2, 2, -2.5); scene.add(rim);
 const rim2 = new THREE.DirectionalLight(0x4aa8ff, 0.6); rim2.position.set(2.4, 1.6, -2); scene.add(rim2);
 
-const A = { ready: false, THREE, scene, camera, renderer, controls, B, fp: null, setView };
+const look = makeLook(THREE), halo = makeHalo(THREE, scene);
+const A = { look, halo, ready: false, THREE, scene, camera, renderer, controls, B, fp: null, setView };
 window.__avatar = A;
 function resize() { const w = window.innerWidth, h = window.innerHeight; renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); }
 window.addEventListener('resize', resize); resize();
@@ -74,7 +76,7 @@ async function load() {
   scene.add(root);
   $('loadtxt').textContent = 'Loading textures...';
   await texturesReady(root);
-  A.root = root; A.rig = new Rig(THREE, root); A.face = new Face(THREE, root, A.rig);
+  A.root = root; A.rig = new Rig(THREE, root); A.face = new Face(THREE, root, A.rig); look.apply(root);   // after Face: chains onto its shader patch
   A.fp = { lidL: { closed: 0, tilt: 0, low: 0 }, lidR: { closed: 0, tilt: 0, low: 0 }, mouth: { open: 0, width: 0, smile: 0 }, gaze: { x: 0, y: 0 } };
   anim = new Animator(A); A.anim = anim; A.mind = mind;
   A.ready = true;
@@ -219,6 +221,7 @@ let nextBored = 150 + Math.random() * 120;
     $('moodfill').style.width = Math.round(mind.anger * 100) + '%';
     const aura = clamp(anim.ch.aura || 0, 0, 1.2);
     $('vig').style.opacity = String(clamp(aura * 0.55, 0, 0.6));
+    look.update(now, aura, mind.anger); halo.update(now, aura, mind.anger, ctx.cam.yaw);
     rim.intensity = 1.0 + 2.6 * aura; eMat.opacity = 0.3 + 0.55 * Math.min(1, aura); eMat.size = 0.045 + 0.05 * Math.min(1, aura);
     for (let i = 0; i < N; i++) {
       ePos[i * 3 + 1] += eVel[i] * (0.4 + aura * 1.4) * dt; ePos[i * 3] += Math.sin(now * 1.3 + eSeed[i]) * 0.05 * dt;

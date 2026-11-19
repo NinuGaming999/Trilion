@@ -296,3 +296,13 @@ console.log('ok');
 """
     r = subprocess.run(["node", "--input-type=module", "-e", code], cwd=ROOT, capture_output=True, text=True, timeout=30)
     assert r.returncode == 0 and "ok" in r.stdout, r.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_look_module_parses_and_is_wired_after_face():
+    d = ROOT / "trilion" / "web" / "avatar"
+    r = subprocess.run(["node", "--check", str(d / "look.js")], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    src = (d / "avatar.js").read_text(encoding="utf-8")
+    assert "makeLook" in src and src.index("new Face(") < src.index("look.apply(root)")   # chains onto face.js's shader patch
+    assert "#include <opaque_fragment>" in (d / "look.js").read_text(encoding="utf-8")
