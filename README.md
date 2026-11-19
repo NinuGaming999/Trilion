@@ -32,6 +32,7 @@ A dark-glass dashboard with a rotating triangle-mesh **AI core**, and every pane
 - **The AI is her logic:** instant reactions and stock voice lines play with no waiting; the AI adds in-character words when something notable happens. She never talks over a real task, and *Settings > avatar voice* can mute her.
 - **Model:** `genshin-impact-arlecchino.zip` is downloaded once on first use (or used from the repo copy when running from source) and unpacked safely. Dev server without the full app: `python scripts/avatar_dev.py`.
 - **Vibrant look (v0.10.1):** custom shading on every material (richer colour, cool shadows, warm highlights, glossy hair sheen, a rim light) and a soft halo behind her. Both shift from cool blue to hot red as she gets angry.
+- **Glow and hair fix (v0.10.2):** bloom lights up her rim, red gems and eyes, plus a glowing ring and aura behind her that turn from blue to red with her mood; the glow is pure light over a transparent canvas, so OBS still sees through. Press **G** on the page (or add `?glow=0` to the URL) to turn it off on a weak GPU. The hair, body and dress are now driven by one shared skeleton, so the hair stays attached to the head when she turns, nods or flinches.
 - **Safe by design:** loopback only, Host-header check, a per-session token on every POST, path-traversal and zip-slip protection.
 
 ## The brain (v0.4)

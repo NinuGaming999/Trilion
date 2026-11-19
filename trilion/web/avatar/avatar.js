@@ -7,6 +7,11 @@ import { Animator } from './anim.js';
 import { Mind, CANNED } from './mind.js';
 import { makeLook, makeHalo } from './look.js';
 import { unifySkeletons } from './skel.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 
 const CFG = window.TRILION_CONFIG || {}, TOKEN = window.TRILION_TOKEN || '';
 const $ = (id) => document.getElementById(id);
@@ -30,9 +35,27 @@ const rim = new THREE.DirectionalLight(0xff3b4e, 1.0); rim.position.set(-2, 2, -
 const rim2 = new THREE.DirectionalLight(0x4aa8ff, 0.6); rim2.position.set(2.4, 1.6, -2); scene.add(rim2);
 
 const look = makeLook(THREE), halo = makeHalo(THREE, scene);
-const A = { look, halo, ready: false, THREE, scene, camera, renderer, controls, B, fp: null, setView };
+const A = { look, halo, get glow() { return glowOn && !!composer; }, setGlow(v) { glowOn = !!v; }, ready: false, THREE, scene, camera, renderer, controls, B, fp: null, setView };
 window.__avatar = A;
-function resize() { const w = window.innerWidth, h = window.innerHeight; renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); }
+// ---------------------------------------------------------------- glow (bloom that keeps the transparent canvas, so OBS still sees through)
+let composer = null, bloom = null, glowOn = new URLSearchParams(location.search).get('glow') !== '0';
+function setupGlow() {
+  try {
+    const pr = renderer.getPixelRatio(), rt = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, samples: 4 });
+    composer = new EffectComposer(renderer, rt); composer.setPixelRatio(pr);
+    composer.addPass(new RenderPass(scene, camera));
+    bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.8, 0.55, 0.62);
+    const bm = bloom.blendMaterial;                       // add the glow to the colour only; leave the alpha alone (true additive on the page)
+    bm.blending = THREE.CustomBlending; bm.blendEquation = THREE.AddEquation;
+    bm.blendSrc = THREE.OneFactor; bm.blendDst = THREE.OneFactor; bm.blendSrcAlpha = THREE.ZeroFactor; bm.blendDstAlpha = THREE.OneFactor;
+    composer.addPass(bloom); composer.addPass(new OutputPass());
+    // glow is light, not paint: make alpha at least as bright as the colour so every browser composites it as a clean additive glow
+    composer.addPass(new ShaderPass({ uniforms: { tDiffuse: { value: null } }, vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: 'uniform sampler2D tDiffuse; varying vec2 vUv; void main(){ vec4 c = texture2D(tDiffuse, vUv); gl_FragColor = vec4(c.rgb, max(c.a, max(c.r, max(c.g, c.b)))); }' }));
+  } catch (e) { composer = null; console.warn('glow unavailable', e); }
+}
+setupGlow();
+function resize() { const w = window.innerWidth, h = window.innerHeight; renderer.setSize(w, h, false); if (composer) composer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); }
 window.addEventListener('resize', resize); resize();
 
 // ---------------------------------------------------------------- embers / pyro aura
@@ -202,7 +225,7 @@ canvas.addEventListener('pointermove', (e) => {
 function release() { if (!down) return; if (down.moved < 12 && now - down.t < 0.55) touch(down.zone, 'poke', down.hit); controls.enabled = true; down = null; }
 canvas.addEventListener('pointerup', release); canvas.addEventListener('pointercancel', release);
 canvas.addEventListener('dblclick', () => setView('bust'));
-window.addEventListener('keydown', (e) => { if (e.target.tagName === 'INPUT') return; const k = e.key.toLowerCase(); if (k === 'f') setView('full'); if (k === 'b') setView('bust'); if (k === 'c') setView('face'); });
+window.addEventListener('keydown', (e) => { if (e.target.tagName === 'INPUT') return; const k = e.key.toLowerCase(); if (k === 'f') setView('full'); if (k === 'b') setView('bust'); if (k === 'c') setView('face'); if (k === 'g') A.setGlow(!glowOn); });
 
 // ---------------------------------------------------------------- frame loop
 const clock = new THREE.Clock();
@@ -223,7 +246,7 @@ let nextBored = 150 + Math.random() * 120;
     $('moodfill').style.width = Math.round(mind.anger * 100) + '%';
     const aura = clamp(anim.ch.aura || 0, 0, 1.2);
     $('vig').style.opacity = String(clamp(aura * 0.55, 0, 0.6));
-    look.update(now, aura, mind.anger); halo.update(now, aura, mind.anger, ctx.cam.yaw);
+    look.update(now, aura, mind.anger); if (bloom) { bloom.strength = 0.7 + 0.9 * Math.min(1, aura) + 0.25 * mind.anger; bloom.radius = 0.55 + 0.25 * Math.min(1, aura); } halo.update(now, aura, mind.anger, ctx.cam.yaw);
     rim.intensity = 1.0 + 2.6 * aura; eMat.opacity = 0.3 + 0.55 * Math.min(1, aura); eMat.size = 0.045 + 0.05 * Math.min(1, aura);
     for (let i = 0; i < N; i++) {
       ePos[i * 3 + 1] += eVel[i] * (0.4 + aura * 1.4) * dt; ePos[i * 3] += Math.sin(now * 1.3 + eSeed[i]) * 0.05 * dt;
@@ -232,5 +255,5 @@ let nextBored = 150 + Math.random() * 120;
     eGeo.attributes.position.needsUpdate = true;
   }
   controls.update();
-  renderer.render(scene, camera);
+  if (composer && glowOn) composer.render(dt); else renderer.render(scene, camera);
 })();

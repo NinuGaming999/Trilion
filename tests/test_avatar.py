@@ -350,3 +350,46 @@ console.log('ok');
 """
     r = subprocess.run(["node", "--input-type=module", "-e", code], cwd=ROOT, capture_output=True, text=True, timeout=30)
     assert r.returncode == 0 and "ok" in r.stdout, r.stderr[-800:]
+
+
+def test_every_js_import_resolves_to_a_bundled_file():
+    """A missing vendored file would blank the whole avatar page, so walk the import graph from index.html's modules."""
+    web = ROOT / "trilion" / "web" / "avatar"
+    lib = web / "lib"
+    seen, todo, missing = set(), [web / "avatar.js"], []
+    while todo:
+        f = todo.pop()
+        if f in seen:
+            continue
+        seen.add(f)
+        src = f.read_text(encoding="utf-8")
+        for spec in re.findall(r"""(?:import|export)\s[^'";]*?from\s*['"]([^'"]+)['"]|import\s*['"]([^'"]+)['"]""", src, re.S):
+            spec = spec[0] or spec[1]
+            if spec == "three":
+                target = lib / "three.module.min.js"
+            elif spec.startswith("three/addons/"):
+                target = lib / "jsm" / spec[len("three/addons/"):]
+            elif spec.startswith("."):
+                target = (f.parent / spec).resolve()
+            else:
+                missing.append((f.name, spec))
+                continue
+            if not target.is_file():
+                missing.append((f.name, spec))
+            elif target.suffix == ".js" and "three.module" not in target.name:
+                todo.append(target)
+    assert not missing, missing
+    assert any(p.name == "UnrealBloomPass.js" for p in seen) and any(p.name == "skel.js" for p in seen)
+
+
+def test_postprocessing_files_are_served(server):
+    hud, *_ = server
+    for rel in ("postprocessing/UnrealBloomPass.js", "postprocessing/EffectComposer.js", "shaders/LuminosityHighPassShader.js"):
+        assert req(hud, "/avatar/static/lib/jsm/" + rel)[0] == 200
+
+
+def test_halo_and_glow_never_write_opaque_alpha():
+    look = (ROOT / "trilion" / "web" / "avatar" / "look.js").read_text(encoding="utf-8")
+    assert "CustomBlending" in look and "AdditiveBlending" not in look.split("makeHalo")[1]
+    av_js = (ROOT / "trilion" / "web" / "avatar" / "avatar.js").read_text(encoding="utf-8")
+    assert "blendSrcAlpha = THREE.ZeroFactor" in av_js and "max(c.a, max(c.r" in av_js
