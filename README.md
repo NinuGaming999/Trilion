@@ -26,6 +26,13 @@ A dark-glass dashboard with a rotating triangle-mesh **AI core**, and every pane
 - **Trilion's main window** is hidden from recordings by default (so the AI can see what is behind it). Tick *Show Trilion's main window in screen recordings* to record it too.
 - If the **tray icon** is missing, Windows 11 has probably put it under the **^** arrow next to the clock; Trilion now tells you so on first launch and never shows a blank icon.
 
+## 3D avatar (v0.10)
+- **Arlecchino avatar:** a 3D, touch-reactive Trilion at `http://127.0.0.1:17655/avatar` (this PC only). Turn it on in Settings (*3D avatar page*) or from the tray menu, then open the URL in any browser or an OBS Browser Source. It does not change the Trilion core animation.
+- **Interactive:** poke, hold or stroke her. Touch her too much and she glares, warns, then sulks and turns away, and she forgives you after a cool-down.
+- **The AI is her logic:** instant reactions and stock voice lines play with no waiting; the AI adds in-character words when something notable happens. She never talks over a real task, and *Settings > avatar voice* can mute her.
+- **Model:** `genshin-impact-arlecchino.zip` is downloaded once on first use (or used from the repo copy when running from source) and unpacked safely. Dev server without the full app: `python scripts/avatar_dev.py`.
+- **Safe by design:** loopback only, Host-header check, a per-session token on every POST, path-traversal and zip-slip protection.
+
 ## The brain (v0.4)
 Trilion now runs **Qwen3.5 9B** (Q6_K, vision built in) through llama.cpp, with "thinking" switched off for speed.
 Replies are forced into a strict `{say, action}` JSON format by a grammar, so a command can never be malformed or read aloud.
