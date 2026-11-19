@@ -306,3 +306,47 @@ def test_look_module_parses_and_is_wired_after_face():
     src = (d / "avatar.js").read_text(encoding="utf-8")
     assert "makeLook" in src and src.index("new Face(") < src.index("look.apply(root)")   # chains onto face.js's shader patch
     assert "#include <opaque_fragment>" in (d / "look.js").read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_unify_skeletons_hair_follows_head_node():
+    """Two skeleton copies; in one, the head bone hangs under duplicate non-skeleton parents (like the FBX hair/body copies)."""
+    code = """
+import * as T from './trilion/web/avatar/lib/three.module.min.js';
+import { unifySkeletons } from './trilion/web/avatar/skel.js';
+const root = new T.Group();
+function bone(n, y) { const b = new T.Bone(); b.name = n; b.position.set(0, y, 0); return b; }
+function copy(dups) {                       // Neck -> [dup Neck, dup Head ...] -> Head
+  const neck = bone('Neck', 1); let tip = neck;
+  for (let i = 0; i < dups; i++) { const d = bone(i ? 'Head' : 'Neck', 0.1); tip.add(d); tip = d; }
+  const head = bone('Head', 0.5); tip.add(head); root.add(neck);
+  return { neck, head, bones: [neck, head] };
+}
+function mesh(c, name) {
+  const g = new T.BufferGeometry(); g.setAttribute('position', new T.Float32BufferAttribute([0, 1.5, 0, 0.1, 1.5, 0, 0, 1.6, 0.1], 3));
+  g.setAttribute('skinIndex', new T.Uint16BufferAttribute([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0], 4));
+  g.setAttribute('skinWeight', new T.Float32BufferAttribute([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0], 4));
+  const m = new T.SkinnedMesh(g, new T.MeshBasicMaterial({ name })); m.material.name = name; root.add(m);
+  root.updateMatrixWorld(true);
+  m.bind(new T.Skeleton(c.bones), m.matrixWorld); return m;
+}
+const clean = copy(0), dirty = copy(2);
+// make rest poses agree (dirty copy's duplicate parents sit at the same place as the clean chain)
+dirty.neck.children[0].position.set(0, 0, 0); dirty.neck.children[0].children[0].position.set(0, 0, 0);
+const mFace = mesh(clean, 'face'), mHair = mesh(dirty, 'hair');
+const info = unifySkeletons(T, root);
+if (info.unified !== 1 || info.skipped.length) throw new Error('not unified ' + JSON.stringify(info));
+if (mHair.skeleton.bones[1] !== mFace.skeleton.bones[1] || mHair.skeleton.bones[0] !== mFace.skeleton.bones[0]) throw new Error('bones not shared');
+// rotate the neck and the head: both meshes now see exactly the same head transform
+mFace.skeleton.bones[0].rotation.y = 0.7; mFace.skeleton.bones[1].rotation.x = 0.4; root.updateMatrixWorld(true);
+const a = new T.Vector3(), b = new T.Vector3(); mFace.skeleton.update(); mHair.skeleton.update();
+mFace.getVertexPosition(0, a); mHair.getVertexPosition(0, b);
+if (a.distanceTo(b) > 1e-6) throw new Error('hair and face disagree by ' + a.distanceTo(b));
+// a copy whose bind pose differs must be left alone
+const odd = copy(0); odd.neck.position.set(0.3, 1, 0); const mOdd = mesh(odd, 'dress');
+const info2 = unifySkeletons(T, root);
+if (!info2.skipped.some((s) => s.startsWith('dress'))) throw new Error('mismatched bind pose was not skipped');
+console.log('ok');
+"""
+    r = subprocess.run(["node", "--input-type=module", "-e", code], cwd=ROOT, capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0 and "ok" in r.stdout, r.stderr[-800:]

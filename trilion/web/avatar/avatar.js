@@ -6,6 +6,7 @@ import { Face } from './face.js';
 import { Animator } from './anim.js';
 import { Mind, CANNED } from './mind.js';
 import { makeLook, makeHalo } from './look.js';
+import { unifySkeletons } from './skel.js';
 
 const CFG = window.TRILION_CONFIG || {}, TOKEN = window.TRILION_TOKEN || '';
 const $ = (id) => document.getElementById(id);
@@ -76,6 +77,7 @@ async function load() {
   scene.add(root);
   $('loadtxt').textContent = 'Loading textures...';
   await texturesReady(root);
+  A.skel = unifySkeletons(THREE, root); if (A.skel.skipped.length) console.warn('skeleton unify skipped', A.skel.skipped);
   A.root = root; A.rig = new Rig(THREE, root); A.face = new Face(THREE, root, A.rig); look.apply(root);   // after Face: chains onto its shader patch
   A.fp = { lidL: { closed: 0, tilt: 0, low: 0 }, lidR: { closed: 0, tilt: 0, low: 0 }, mouth: { open: 0, width: 0, smile: 0 }, gaze: { x: 0, y: 0 } };
   anim = new Animator(A); A.anim = anim; A.mind = mind;
