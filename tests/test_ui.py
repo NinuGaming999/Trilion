@@ -216,3 +216,25 @@ def test_hud_snapshot_reports_game_state(win):
     a.tools.game_on = False
     assert snap["game"] == {"on": True, "profile": "minecraft", "keys": ["w"], "buttons": [], "move": [5, -3]}
     assert snap["state"] == "acting" and snap["brain"] == "Qwen3.5 9B" and snap["color"] == [25, 211, 255]
+
+
+def test_avatar_page_toggle_shares_server_with_obs(win, tmp_path):
+    import urllib.request
+    w, b, a, app = win
+    w.cfg["hud_port"] = 0
+    w.set_avatar_web(True)
+    try:
+        assert w.hud is not None and w.cfg.get("avatar_web") and w.avatar is not None
+        assert w.avatar_url_lbl.text() == w.hud.url + "avatar" and w.url_lbl.text() == "(off)"
+        w.avatar.model_dir = tmp_path          # no model download in tests
+        assert urllib.request.urlopen(w.hud.url + "avatar/status").status == 200
+        w.set_web_hud(True)                    # OBS source reuses the same server
+        server = w.hud
+        w.set_avatar_web(False)
+        assert w.hud is server and w.avatar_url_lbl.text() == "(off)" and w.url_lbl.text().startswith("http://127.0.0.1:")
+        with pytest.raises(Exception):
+            urllib.request.urlopen(w.hud.url + "avatar/status")
+    finally:
+        w.set_web_hud(False)
+        w.set_avatar_web(False)
+    assert w.hud is None
