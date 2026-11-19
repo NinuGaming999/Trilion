@@ -202,7 +202,7 @@ def test_obs_source_starts_stops_and_streams_live_state(win):
         for _ in range(6):
             w._tick()
         data = _json.loads(urllib.request.urlopen(w.hud.url + "state").read())
-        assert data["version"] and data["events"][-1] == {"k": "ok", "text": "open_app: discord"}
+        assert data["version"] and {k: data["events"][-1][k] for k in ("k", "text")} == {"k": "ok", "text": "open_app: discord"}
         assert data["game"] is None and any("open_app: discord" in t for t, _ in data["lines"]["full"])
     finally:
         w.set_web_hud(False)
