@@ -4,6 +4,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { Rig, B } from './rig.js';
 import { Face } from './face.js';
 import { Animator } from './anim.js';
+import { Perf, gestureForText, speechSeconds } from './motion.js';
+import { buildDebug } from './debug.js';
 import { Mind, CANNED } from './mind.js';
 import { makeLook, makeHalo } from './look.js';
 import { unifySkeletons } from './skel.js';
@@ -35,10 +37,11 @@ const rim = new THREE.DirectionalLight(0xff3b4e, 1.0); rim.position.set(-2, 2, -
 const rim2 = new THREE.DirectionalLight(0x4aa8ff, 0.6); rim2.position.set(2.4, 1.6, -2); scene.add(rim2);
 
 const look = makeLook(THREE), halo = makeHalo(THREE, scene);
-const A = { look, halo, get glow() { return glowOn && !!composer; }, setGlow(v) { glowOn = !!v; }, ready: false, THREE, scene, camera, renderer, controls, B, fp: null, setView };
+const A = { look, halo, get glow() { return glowOn && !!composer; }, setGlow(v) { userGlow = !!v; glowOn = userGlow && perfLevel < 2; }, timeScale: 1, perf: new Perf(), ready: false, THREE, scene, camera, renderer, controls, B, fp: null, setView };
 window.__avatar = A;
 // ---------------------------------------------------------------- glow (bloom that keeps the transparent canvas, so OBS still sees through)
-let composer = null, bloom = null, glowOn = new URLSearchParams(location.search).get('glow') !== '0';
+const QS = new URLSearchParams(location.search), PERF_ON = QS.get('perf') !== '0';
+let composer = null, bloom = null, glowOn = QS.get('glow') !== '0', userGlow = glowOn, perfLevel = 0;
 function setupGlow() {
   try {
     const pr = renderer.getPixelRatio(), rt = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, samples: 4 });
@@ -104,12 +107,13 @@ async function load() {
   A.root = root; A.rig = new Rig(THREE, root); A.face = new Face(THREE, root, A.rig); look.apply(root);   // after Face: chains onto its shader patch
   A.fp = { lidL: { closed: 0, tilt: 0, low: 0 }, lidR: { closed: 0, tilt: 0, low: 0 }, mouth: { open: 0, width: 0, smile: 0 }, gaze: { x: 0, y: 0 } };
   anim = new Animator(A); A.anim = anim; A.mind = mind;
+  anim.intensity = clamp(parseFloat(QS.get('motion')) || CFG.motion || 1, 0.3, 1.6);
   A.ready = true;
   $('load').classList.add('done');
 }
 load().catch((e) => { $('loadtxt').textContent = 'Could not load her: ' + e; console.error(e); });
 
-const ctx = { state: 'idle', out: 0, mic: 0, localOut: 0, anger: 0, level: 'calm', sulking: false, cam: { yaw: 0 }, pointer: { x: 0, y: 0, age: 99 } };
+const ctx = { state: 'idle', out: 0, mic: 0, localOut: 0, spec: null, typing: 0, anger: 0, level: 'calm', sulking: false, cam: { yaw: 0 }, pointer: { x: 0, y: 0, age: 99 } };
 A.ctx = ctx;
 let now = 0;
 
@@ -128,6 +132,13 @@ function onLine(l) {
   const g = l.gesture;
   if (g && g !== 'none') anim.play(g, { side: Math.random() < 0.5 ? -1 : 1, dur: g === 'turn_away' ? 2.6 : undefined });
 }
+let gestureTimers = [];
+function scheduleGestures(text) {                         // gestures timed to the words (nod on "yes", shake on "no", a beat on "!", a tilt on "?")
+  gestureTimers.forEach(clearTimeout); gestureTimers = [];
+  const ms = speechSeconds(text) * 1000;
+  for (const g of gestureForText(text)) gestureTimers.push(setTimeout(() => { if (anim && (ctx.state === 'speaking' || ctx.localOut > 0.02)) anim.play(g.name, { power: g.power, side: Math.random() < 0.5 ? -1 : 1 }); }, 600 + g.at * ms));
+}
+const PINNED_MOTION = !!parseFloat(QS.get('motion'));
 let polling = false;
 async function poll() {
   if (polling || !anim) return; polling = true;
@@ -136,12 +147,13 @@ async function poll() {
     connected = true;
     ctx.state = S.state || 'idle'; ctx.out = clamp(S.out || 0, 0, 1); ctx.mic = clamp(S.mic || 0, 0, 1);
     const av = S.avatar || {};
+    if (av.motion && !PINNED_MOTION && anim) anim.intensity = clamp(av.motion, 0.3, 1.6);   // Settings > Avatar movement, live
     if (av.line && av.line.id !== lastLineId) { lastLineId = av.line.id; onLine(av.line); }
     const last = (S.events || []).filter((e) => e.k === 'reply').pop();
     if (last && last.id && last.id !== lastReplyId) {
       lastReplyId = last.id;
       if (!first) {
-        bubble(last.text, '', 3000 + last.text.length * 55);
+        bubble(last.text, '', 3000 + last.text.length * 55); scheduleGestures(last.text);
         if (/sorry|error|couldn't|could not|failed|can't/i.test(last.text)) anim.setEmotion('sad', 3);
         else if (/!|haha|great|nice/i.test(last.text)) anim.setEmotion('amused', 3);
         else if (/\?/.test(last.text)) anim.setEmotion('curious', 3);
@@ -152,11 +164,12 @@ async function poll() {
   polling = false;
 }
 setInterval(poll, 100);
+let typingT = -99; $('say').addEventListener('input', () => { typingT = now; });
 $('bar').addEventListener('submit', (e) => { e.preventDefault(); const i = $('say'), t = i.value.trim(); if (!t) return; i.value = ''; post('/avatar/say', { text: t }); bubble('...', '', 1500); });
 
 // ---------------------------------------------------------------- instant stock lines (pre-synthesised by Trilion's voice)
 const slug = (t) => t.toLowerCase().replace(/[^a-z]+/g, '-').replace(/^-+|-+$/g, '') || 'line';
-let actx = null, analyser = null, filler = null, aBuf = null;
+let actx = null, analyser = null, filler = null, aBuf = null, fBuf = null;
 function playFiller(text) {
   try {
     if (filler) filler.pause();
@@ -169,7 +182,11 @@ function playFiller(text) {
 }
 function fillerLevel() {
   if (!filler || filler.paused || filler.ended || !analyser) return 0;
-  analyser.getByteTimeDomainData(aBuf); let s = 0; for (const v of aBuf) { const d = (v - 128) / 128; s += d * d; } return clamp(Math.sqrt(s / aBuf.length) * 4, 0, 1);
+  analyser.getByteTimeDomainData(aBuf); let s = 0; for (const v of aBuf) { const d = (v - 128) / 128; s += d * d; }
+  if (!fBuf) fBuf = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(fBuf); let num = 0, den = 0; for (let i = 1; i < fBuf.length; i++) { num += i * fBuf[i]; den += fBuf[i]; }
+  ctx.spec = den > 0 ? clamp((num / den) / (fBuf.length * 0.35), 0, 1) : null;          // low = round "oo", high = wide "ee"
+  return clamp(Math.sqrt(s / aBuf.length) * 4, 0, 1);
 }
 
 // ---------------------------------------------------------------- touching her
@@ -202,7 +219,7 @@ function touch(zone, kind, hit) {
   for (const c of res.clips) {
     if (c.clip === 'pullArm' && hit) c.side = hit.point.x < 0 ? 1 : -1;
     if (c.clip === 'snap') anim.sulkSide = c.side;
-    anim.play(c.clip, c);
+    c.zone = zone; anim.play(c.clip, c);
   }
   bubble(res.canned, res.level === 'calm' ? '' : 'angry', 2200); playFiller(res.canned);
   if (res.snap) for (let i = 0; i < N; i++) { resetEmber(i, false); eVel[i] *= 2.5; }
@@ -225,14 +242,16 @@ canvas.addEventListener('pointermove', (e) => {
 function release() { if (!down) return; if (down.moved < 12 && now - down.t < 0.55) touch(down.zone, 'poke', down.hit); controls.enabled = true; down = null; }
 canvas.addEventListener('pointerup', release); canvas.addEventListener('pointercancel', release);
 canvas.addEventListener('dblclick', () => setView('bust'));
-window.addEventListener('keydown', (e) => { if (e.target.tagName === 'INPUT') return; const k = e.key.toLowerCase(); if (k === 'f') setView('full'); if (k === 'b') setView('bust'); if (k === 'c') setView('face'); if (k === 'g') A.setGlow(!glowOn); });
+window.addEventListener('keydown', (e) => { if (e.target.tagName === 'INPUT') return; const k = e.key.toLowerCase(); if (k === 'f') setView('full'); if (k === 'b') setView('bust'); if (k === 'c') setView('face'); if (k === 'g') A.setGlow(!glowOn); if (k === 'd' && A.ready) { dbg = dbg || buildDebug(A); dbg.toggle(); } });
+let dbg = null;
 
 // ---------------------------------------------------------------- frame loop
 const clock = new THREE.Clock();
 let nextBored = 150 + Math.random() * 120;
 (function loop() {
   requestAnimationFrame(loop);
-  const dt = Math.min(0.05, clock.getDelta()); now = clock.elapsedTime;
+  const raw = clock.getDelta(), dt = Math.min(0.05, raw); now = clock.elapsedTime;
+  if (PERF_ON) { const lv = A.perf.update(raw); if (lv !== perfLevel) { perfLevel = lv; if (anim) anim.quality = lv; glowOn = userGlow && lv < 2; } }
   ctx.pointer.age += dt;
   if (A.ready) {
     const m = mind.update(dt, now);
@@ -241,7 +260,8 @@ let nextBored = 150 + Math.random() * 120;
     if (m.cooled) { const l = CANNED.cooled[Math.floor(Math.random() * 3)]; bubble(l, '', 2600); playFiller(l); anim.setEmotion('calm', 3); post('/avatar/event', { type: 'cooled' }); }
     if (down && down.moved < 12 && now - down.t > 0.55 && now - down.lastHold > 0.8) { down.lastHold = now; touch(down.zone, 'hold', down.hit); }
     if (connected && ctx.state === 'idle' && now - lastInteraction > nextBored) { lastInteraction = now; nextBored = 150 + Math.random() * 150; post('/avatar/event', { type: 'idle' }); }
-    A.rig.reset(); anim.update(dt, ctx); A.face.update(A.fp); A.rig.apply();
+    ctx.typing = now - typingT < 1.6 ? 1 : 0;
+    A.rig.reset(); anim.update(dt * A.timeScale, ctx); A.face.update(A.fp); A.rig.apply();
     $('stat').textContent = (connected ? ctx.state : 'offline') + ' \u00b7 ' + ctx.level + (ctx.sulking ? ' \u00b7 sulking' : '');
     $('moodfill').style.width = Math.round(mind.anger * 100) + '%';
     const aura = clamp(anim.ch.aura || 0, 0, 1.2);
@@ -254,6 +274,7 @@ let nextBored = 150 + Math.random() * 120;
     }
     eGeo.attributes.position.needsUpdate = true;
   }
+  if (dbg) dbg.tick(now);
   controls.update();
   if (composer && glowOn) composer.render(dt); else renderer.render(scene, camera);
 })();

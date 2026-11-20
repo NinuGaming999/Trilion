@@ -24,6 +24,14 @@ MODEL_EXT = {".fbx", ".png", ".jpg", ".jpeg", ".tga", ".json"}
 mimetypes.add_type("text/javascript", ".js")
 
 
+def motion_level(cfg):
+    """Movement intensity for the avatar page (Settings: Subtle / Normal / Lively), clamped to a sane range."""
+    try:
+        return max(0.3, min(1.6, float(cfg.get("avatar_motion", 1.0))))
+    except (TypeError, ValueError):
+        return 1.0
+
+
 def web_dir():
     base = getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parents[2]
     return Path(base) / "trilion" / "web" / "avatar"
@@ -111,7 +119,9 @@ class AvatarService:
 
     # ---- state / fillers ----
     def state_extra(self):
-        return {"avatar": self.mind.public() if self.mind else {"line": None}}
+        out = self.mind.public() if self.mind else {"line": None}
+        out["motion"] = motion_level(self.cfg)
+        return {"avatar": out}
 
     def prepare_fillers(self):
         """Synthesise the short stock lines once so the page can play them instantly (no waiting for the AI)."""
@@ -149,7 +159,7 @@ class AvatarService:
 
     def page(self):
         html = (web_dir() / "index.html").read_text(encoding="utf-8")
-        conf = {"model": "/avatar/model/" + MODEL_FBX, "name": "Trilion"}
+        conf = {"model": "/avatar/model/" + MODEL_FBX, "name": "Trilion", "motion": motion_level(self.cfg)}
         return html.replace("__TOKEN__", self.hud.token).replace("__CONFIG__", json.dumps(conf))
 
     def handle(self, method, path, query, headers, body):
@@ -183,7 +193,7 @@ class AvatarService:
 
 # ======================================================================================================== AI mind
 EMOTIONS = ["neutral", "curious", "amused", "annoyed", "angry", "furious", "sad", "calm"]
-GESTURES = ["none", "nod", "shake_head", "glare", "turn_away", "sigh", "point", "tilt", "shrug"]
+GESTURES = ["none", "nod", "shake_head", "glare", "turn_away", "sigh", "point", "tilt", "shrug", "cross_arms", "chin", "dismiss"]
 REPLY_SCHEMA = {
     "type": "object",
     "properties": {"say": {"type": "string"}, "emotion": {"enum": EMOTIONS}, "gesture": {"enum": GESTURES}},
@@ -196,6 +206,8 @@ You answer a user's touches in character with ONE short sentence (at most 14 wor
 Moods: calm = curious or mildly amused; annoyed = a cold warning; angry = sharp and icy menace; furious = clipped, \
 frosty, final. After a cool-down give a grudging, dry forgiveness. Menace stays theatrical and light: never graphic, \
 never cruel, never insulting the person, never a real threat. Vary your wording; do not repeat earlier lines.
+Gestures you can use: nod, shake_head, glare, turn_away, sigh, point, tilt, shrug, cross_arms (arms crossed: displeased, \
+guarded), chin (hand to chin: considering), dismiss (a cool wave-off), or none.
 Reply ONLY with JSON: {"say": ..., "emotion": ..., "gesture": ...}."""
 
 # stock lines the page plays instantly; mind.js keeps the same list (a test checks they match)

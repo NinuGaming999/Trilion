@@ -519,6 +519,17 @@ class MainWindow(QWidget):
         self.cb_avatar = check("Serve the 3D avatar page: Trilion as an interactive character", slot=self.set_avatar_web,
                                checked=bool(self.cfg.get("avatar_web")))
         check("Speak her reactions with Trilion's voice", "avatar_speak", checked=bool(self.cfg.get("avatar_speak", True)))
+        mr = QHBoxLayout()
+        mr.addWidget(QLabel("Avatar movement"))
+        self.motion_box = QComboBox()
+        for label, v in (("Subtle", 0.6), ("Normal", 1.0), ("Lively", 1.4)):
+            self.motion_box.addItem(label, v)
+        cur = float(self.cfg.get("avatar_motion", 1.0) or 1.0)
+        self.motion_box.setCurrentIndex(min(range(3), key=lambda i: abs(self.motion_box.itemData(i) - cur)))
+        self.motion_box.currentIndexChanged.connect(lambda _: self._cfg("avatar_motion", self.motion_box.currentData()))
+        mr.addWidget(self.motion_box)
+        mr.addStretch(1)
+        lay.addLayout(mr)
         r = QHBoxLayout()
         self.avatar_url_lbl = QLabel("(off)")
         self.avatar_url_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)

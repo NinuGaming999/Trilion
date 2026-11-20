@@ -50,6 +50,7 @@ DEFAULTS = {
     "hud_port": 17655,
     "avatar_web": False,          # serve the 3D avatar page on 127.0.0.1
     "avatar_speak": True,
+    "avatar_motion": 1.0,         # avatar movement intensity: 0.6 subtle, 1.0 normal, 1.4 lively
     "avatar_voice": None,         # Kokoro voice for her stock lines (None = Trilion's voice)
     "tray_hint_shown": False,
     "max_steps": 8,
